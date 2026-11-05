@@ -3,6 +3,7 @@ import { and, eq, ilike, or } from "drizzle-orm";
 import { z } from "zod";
 import { contacts, conversations, creatives, objections, products, variants, workspaces } from "@/db/schema";
 import { idr } from "@/lib/format";
+import { applyVoice } from "@/lib/voice";
 import { factsFor } from "@/lib/knowledge/service";
 import { matchFact } from "@/lib/knowledge/readiness";
 import { logUsage } from "@/lib/log";
@@ -178,7 +179,9 @@ export async function runCloser(ctx: Ctx, conversationId: string) {
     let reply: string | null;
     if (!aiEnabled()) {
       const prevAi = [...history].reverse().find((m) => m.sender === "ai");
-      reply = await demoReply(last.body, actions, row.name, !!prevAi?.body.includes("Balas YA"));
+      const [w] = await ctx.db.select({ settings: workspaces.settings }).from(workspaces).where(eq(workspaces.id, ctx.workspaceId));
+      const raw = await demoReply(last.body, actions, row.name, !!prevAi?.body.includes("Balas YA"));
+      reply = raw && applyVoice(raw, w.settings.voice?.key);
     } else {
       await assertRoom(ctx, "ai", 500);
       const rb = await activeRules(ctx, "whatsapp");

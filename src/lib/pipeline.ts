@@ -1,19 +1,25 @@
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
-import { adMetrics, campaignPlans, campaigns, angles, conversations, creatives, goalTemplates, orders, products, rulebooks, workspaces, type GoalKey, type OrderChannel } from "@/db/schema";
-import { draftPlan } from "./ai/creative";
+import { adMetrics, campaignPlans, campaigns, angles, conversations, creatives, goalTemplates, objections, orders, products, rulebooks, workspaces, type CreativeCheck, type GoalKey, type OrderChannel } from "@/db/schema";
+import { applyVoice } from "./voice";
+import { draftPlan, rewriteCopy, type CreativeDraft, type PlanInput } from "./ai/creative";
+import { reviewVisual } from "./ai/visual";
+import { factsFor } from "./knowledge/service";
+import { fileChecks, failed, textChecks } from "./ads/checks";
+import { limitsFor } from "./ads/limits";
 import { renderCreative, ASSET_DIR } from "./assets/render";
 import { adsPlatform, realId, withRef, type AdsPlatform } from "./ads/platform";
 import { aiEnabled } from "./ai/client";
-import { checkCompliance } from "./ads/compliance";
 import { evaluateAd, fitsDailyCap, scaledBudget } from "./ads/rules";
 import { assertRoom, BudgetError, getLimit, liveDailyTotal, usedThisMonth } from "./budget";
-import { dayKey } from "./format";
+import { dayKey, idr } from "./format";
 import { logActivity, logUsage } from "./log";
 import type { Ctx } from "./types";
 import path from "node:path";
 
 const ASSET_COST = { image: 400, video: 8000 };
 const PLAN_AI_ESTIMATE = 3000;
+const REWRITE_AI_ESTIMATE = 800;
+const MAX_SECONDS: Partial<Record<GoalKey, number>> = { eyeball: 15, cold_sell: 30, whatsapp_chat: 30, form: 30, retargeting: 30 };
 const newRef = () => `LRS-${crypto.randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
 
 export async function activeRules(ctx: Ctx, kind: "ads" | "whatsapp") {
@@ -21,25 +27,39 @@ export async function activeRules(ctx: Ctx, kind: "ads" | "whatsapp") {
   return r;
 }
 
-export async function generatePlan(ctx: Ctx, productId: string) {
+export type Rewriter = (d: CreativeDraft, issues: string[], p: PlanInput) => Promise<CreativeDraft>;
+export type VisualReviewer = (frames: string[], productName: string, photoPath: string | null) => Promise<CreativeCheck>;
+const MAX_ATTEMPTS = 3;
+
+const hookType = (h: string) => h.includes("?") ? "pertanyaan" : /\b(stop|jangan|telat|ragu|takut|pegal|kusam)\b/i.test(h) ? "masalah" : "manfaat";
+
+export async function generatePlan(ctx: Ctx, productId: string, opts: { rewrite?: Rewriter; review?: VisualReviewer } = {}) {
   const { db, workspaceId } = ctx;
   const [p] = await db.select().from(products).where(and(eq(products.id, productId), eq(products.workspaceId, workspaceId)));
   if (!p) throw new Error("Produk tidak ditemukan");
   const [w] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
   const rb = await activeRules(ctx, "ads");
   const goals = await db.select().from(goalTemplates).where(eq(goalTemplates.workspaceId, workspaceId));
-  const ruleTexts = rb?.rules.map((r) => r.text) ?? [];
+  const enabled = rb?.rules.filter((r) => r.enabled !== false) ?? [];
+  const blocked = enabled.map((r) => r.block).filter((x): x is string => !!x);
+  const showPrice = enabled.some((r) => r.id === "show_price");
+  const facts = await factsFor(ctx, productId);
+  const objs = await db.select({ text: objections.text }).from(objections).where(eq(objections.productId, productId)).limit(20);
 
-  if (aiEnabled()) await assertRoom(ctx, "ai", PLAN_AI_ESTIMATE);
-  const draft = await draftPlan({
+  const input: PlanInput = {
     name: p.name, description: p.description, priceIdr: p.priceIdr, costIdr: p.costIdr, approvedClaims: p.approvedClaims, proof: p.proof,
-    rules: ruleTexts, tone: rb?.tone ?? "", goals: goals.map((g) => ({ key: g.key, name: g.name, briefFormat: g.briefFormat })),
-  }, p.visual.shape);
-
+    rules: enabled.map((r) => r.text), tone: rb?.tone ?? "", goals: goals.map((g) => ({ key: g.key, name: g.name, briefFormat: g.briefFormat })),
+    alwaysSay: p.alwaysSay, neverSay: p.neverSay, facts: facts.map((f) => `${f.question} ${f.answer}`), objections: objs.map((o) => o.text), voiceExample: w.settings.voice?.adExample ?? "",
+  };
+  if (aiEnabled()) await assertRoom(ctx, "ai", PLAN_AI_ESTIMATE);
+  const draft = await draftPlan(input, p.visual.shape);
+  if (!aiEnabled()) for (const c of draft.campaigns) for (const d of c.creatives) { d.primaryText = applyVoice(d.primaryText, w.settings.voice?.key); d.hook = applyVoice(d.hook, w.settings.voice?.key); }
   if (aiEnabled()) await logUsage(ctx, "ai", PLAN_AI_ESTIMATE, false, `Rencana ${p.name} (perkiraan)`);
   const total = draft.campaigns.flatMap((c) => c.creatives).reduce((s, c) => s + ASSET_COST[c.format], 0);
   await assertRoom(ctx, "assets", total);
 
+  const rewrite = opts.rewrite ?? (aiEnabled() ? rewriteCopy : null);
+  const review = opts.review ?? (aiEnabled() ? reviewVisual : null);
   const [plan] = await db.insert(campaignPlans).values({ workspaceId, productId, rationale: draft.rationale }).returning();
   const savedAngles = await db.insert(angles).values(draft.angles.map((a) => ({ workspaceId, productId, ...a }))).returning();
 
@@ -50,18 +70,37 @@ export async function generatePlan(ctx: Ctx, productId: string) {
       workspaceId, planId: plan.id, productId, goal: c.goal as GoalKey, destination: c.destination,
       name: `${p.name}: ${goal?.name ?? c.goal}`, dailyBudgetIdr: c.dailyBudgetIdr,
     }).returning();
-    for (const d of c.creatives) {
+    for (const original of c.creatives) {
       const id = crypto.randomUUID();
-      const angle = savedAngles[d.angleIndex] ?? savedAngles[0];
-      const compliance = checkCompliance([d.hook, d.primaryText, d.headline], p, ruleTexts);
+      const angle = savedAngles[original.angleIndex] ?? savedAngles[0];
+      let d = original; let attempts = 1;
+      let copyChecks = textChecks(d, p, blocked, c.goal as GoalKey);
+      while (failed(copyChecks).length && rewrite && attempts < MAX_ATTEMPTS) {
+        await assertRoom(ctx, "ai", REWRITE_AI_ESTIMATE);
+        d = await rewrite(d, failed(copyChecks).map((x) => x.detail ?? x.label), input);
+        await logUsage(ctx, "ai", REWRITE_AI_ESTIMATE, !aiEnabled(), `Perbaikan iklan ${p.name} (perkiraan)`);
+        attempts++;
+        copyChecks = textChecks(d, p, blocked, c.goal as GoalKey);
+      }
+      const prices = showPrice && c.goal !== "eyeball";
       const files = await renderCreative({
-        id, goal: c.goal as GoalKey, hook: d.hook, productName: p.name, priceIdr: p.priceIdr, brand: w.name, visual: p.visual,
-        format: d.format, showPrice: c.goal !== "eyeball", aiLabel: w.settings.aiLabelAds,
+        id, goal: c.goal as GoalKey, hook: d.hook, line2: d.headline, cta: d.cta, productName: p.name, priceIdr: p.priceIdr, brandName: w.name, brand: w.settings.brand,
+        visual: p.visual, photoPath: p.photoPath, format: d.format, showPrice: prices, aiLabel: w.settings.aiLabelAds,
       });
+      const checks: CreativeCheck[] = [
+        ...copyChecks,
+        ...await fileChecks(path.join(ASSET_DIR, files.assetPath), d.format, MAX_SECONDS[c.goal] ?? 30),
+        { key: "price", label: "Harga dicetak sistem", status: "pass", detail: prices ? idr(p.priceIdr) : "Tanpa harga" },
+        p.photoPath ? { key: "photo", label: "Foto produk asli", status: "pass" } : { key: "photo", label: "Foto produk asli", status: "warn", detail: "Masih ilustrasi contoh. Unggah foto asli sebelum tayang sungguhan." },
+        review ? await review(files.frames, p.name, p.photoPath) : { key: "ai_visual", label: "Tinjauan visual AI", status: "not_run", detail: "Butuh Claude" },
+      ];
+      const bad = failed(checks);
       await db.insert(creatives).values({
         id, workspaceId, campaignId: camp.id, angleId: angle.id, concept: d.concept, format: d.format, hook: d.hook,
-        primaryText: d.primaryText, headline: d.headline, cta: d.cta, whatsappOpener: d.whatsappOpener, formQuestions: d.formQuestions,
-        refCode: newRef(), compliance, assetPath: files.assetPath, posterPath: files.posterPath,
+        primaryText: d.primaryText, headline: d.headline, cta: d.cta, whatsappOpener: d.whatsappOpener, formQuestions: d.formQuestions, script: d.script,
+        refCode: newRef(), compliance: { passed: bad.length === 0, issues: bad.map((x) => x.detail ?? x.label) }, checks, attempts, stampedPriceIdr: p.priceIdr,
+        tags: { hookType: hookType(d.hook), format: d.format, seconds: files.seconds, visualSource: p.photoPath ? "foto" : "ilustrasi", hasPerson: false },
+        assetPath: files.assetPath, posterPath: files.posterPath,
       });
       await logUsage(ctx, "assets", ASSET_COST[d.format], true, `${d.format} ${p.name}`);
       count++;
@@ -84,6 +123,8 @@ export async function approveCreative(ctx: Ctx, creativeId: string) {
   }
   const platform = adsPlatform();
   const [p] = await db.select().from(products).where(eq(products.id, camp.productId));
+  if (c.stampedPriceIdr !== null && c.stampedPriceIdr !== p.priceIdr) throw new Error(`Harga ${p.name} sudah berubah sejak iklan ini dibuat. Buat ulang iklannya.`);
+  if (p.stock <= 0) throw new Error(`Stok ${p.name} habis. Iklan tidak bisa ditayangkan.`);
   if (!platform.simulated) {
     if (camp.goal === "form") throw new Error("Formulir Meta belum bisa dibuat otomatis. Tolak iklan ini atau buat formulirnya dulu di Meta.");
     if (camp.destination !== "whatsapp" && !p.sourceUrl) throw new Error(`Isi link produk ${p.name} dulu, iklan ini butuh link tujuan.`);
@@ -165,12 +206,15 @@ export async function simulateDay(ctx: Ctx, day: Date) {
 export async function monitorAds(ctx: Ctx, at = new Date(), platform: AdsPlatform = adsPlatform()) {
   const { db, workspaceId } = ctx;
   const goals = await db.select().from(goalTemplates).where(eq(goalTemplates.workspaceId, workspaceId));
-  const live = await db.select({ c: creatives, camp: campaigns }).from(creatives).innerJoin(campaigns, eq(creatives.campaignId, campaigns.id))
+  const live = await db.select({ c: creatives, camp: campaigns, p: products }).from(creatives).innerJoin(campaigns, eq(creatives.campaignId, campaigns.id)).innerJoin(products, eq(campaigns.productId, products.id))
     .where(and(eq(creatives.workspaceId, workspaceId), eq(creatives.status, "live")));
+  const rb = await activeRules(ctx, "ads");
+  const stopNoStock = rb?.rules.some((r) => r.id === "stop_no_stock" && r.enabled !== false) ?? true;
   const decisions: { hook: string; action: string }[] = [];
-  for (const { c, camp } of live) {
-    const rules = goals.find((g) => g.key === camp.goal)?.rules;
-    if (!rules) continue;
+  for (const { c, camp, p } of live) {
+    const base = goals.find((g) => g.key === camp.goal)?.rules;
+    if (!base) continue;
+    const rules = limitsFor(camp.goal, base, p, camp.destination);
     const m = await db.select().from(adMetrics).where(eq(adMetrics.creativeId, c.id));
     const sales = await db.select({ id: orders.id }).from(orders).where(and(eq(orders.creativeId, c.id), inArray(orders.status, ["ordered", "confirmed", "paid", "shipped", "delivered"])));
     const stats = {
@@ -178,7 +222,7 @@ export async function monitorAds(ctx: Ctx, at = new Date(), platform: AdsPlatfor
       videoWatches: m.reduce((s, x) => s + x.videoWatches, 0), frequency: m.at(-1)?.frequency ?? 1,
       chats: m.reduce((s, x) => s + x.chats, 0), qualifiedLeads: m.reduce((s, x) => s + x.qualifiedLeads, 0), sales: sales.length,
     };
-    const d = evaluateAd(camp.goal, rules, stats);
+    const d = stopNoStock && p.stock <= 0 ? { action: "pause" as const, reason: `Stok ${p.name} habis` } : evaluateAd(camp.goal, rules, stats);
     if (d.action === "pause") {
       const adId = platform.simulated ? null : realId(c.externalId);
       if (adId) await platform.pause(adId);

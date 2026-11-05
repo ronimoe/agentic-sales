@@ -1,12 +1,13 @@
 import { z } from "zod";
-import type { Destination, GoalKey } from "@/db/schema";
+import type { GoalKey } from "@/db/schema";
 import { aiEnabled, structured } from "./client";
 
 const CreativeDraft = z.object({
   angleIndex: z.number().int(), concept: z.string(), format: z.enum(["image", "video"]),
   hook: z.string(), primaryText: z.string(), headline: z.string(), cta: z.string(),
-  whatsappOpener: z.string().nullable(), formQuestions: z.array(z.string()).nullable(),
+  whatsappOpener: z.string().nullable(), formQuestions: z.array(z.string()).nullable(), script: z.string().nullable(),
 });
+export type CreativeDraft = z.infer<typeof CreativeDraft>;
 export const PlanDraft = z.object({
   rationale: z.string(),
   angles: z.array(z.object({ title: z.string(), audience: z.string(), pain: z.string(), promise: z.string(), proof: z.string() })),
@@ -21,6 +22,7 @@ export type PlanDraft = z.infer<typeof PlanDraft>;
 export type PlanInput = {
   name: string; description: string; priceIdr: number; costIdr: number; approvedClaims: string[]; proof: string[];
   rules: string[]; tone: string; goals: { key: GoalKey; name: string; briefFormat: string }[];
+  alwaysSay: string[]; neverSay: string[]; facts: string[]; objections: string[]; voiceExample: string;
 };
 
 const DEMO: Record<string, { title: string; audience: string; pain: string; promise: string; hook: string }[]> = {
@@ -51,7 +53,7 @@ function demoPlan(p: PlanInput, shape: string): PlanDraft {
   const body = (i: number) => `${set[i].pain}? ${set[i].promise}. ${proof}`.trim();
   const drafts = (i: number, format: "image" | "video", cta: string, extra: Partial<PlanDraft["campaigns"][0]["creatives"][0]> = {}) => ({
     angleIndex: i, concept: set[i].title, format, hook: set[i].hook, primaryText: body(i), headline: set[i].promise, cta,
-    whatsappOpener: null, formQuestions: null, ...extra,
+    whatsappOpener: null, formQuestions: null, script: format === "video" ? `${set[i].hook}. ${set[i].promise}.` : null, ...extra,
   });
   return {
     rationale: `Mulai dari pesan paling jelas, ukur lewat chat dan penjualan, lalu bangun audiens untuk ditawarkan ulang. Margin ${Math.round(((p.priceIdr - p.costIdr) / Math.max(p.priceIdr, 1)) * 100)}% masih cukup untuk menguji beberapa sudut pandang.`,
@@ -73,7 +75,9 @@ const SYSTEM = `Kamu tim kreatif iklan Meta untuk pasar Indonesia. Tulis semua t
 Buat 3 sudut pandang yang benar-benar berbeda, bukan variasi kecil. Hook maksimal 45 karakter.
 Gunakan hanya klaim yang disetujui dan bukti yang diberikan. Jangan janjikan hasil pasti, jangan klaim pengobatan.
 Setiap kampanye punya satu tujuan dan iklannya harus sesuai format tujuan itu.
-Field whatsappOpener hanya untuk whatsapp_chat. Field formQuestions hanya untuk form dan wajib memuat persetujuan dihubungi lewat WhatsApp.`;
+Field whatsappOpener hanya untuk whatsapp_chat. Field formQuestions hanya untuk form dan wajib memuat persetujuan dihubungi lewat WhatsApp. Field script berisi kata-kata video dan hanya untuk format video.
+Dilarang: tenaga kesehatan dalam iklan kosmetik, janji perubahan atau before-after, testimoni selain kutipan dari bukti, orang buatan yang mengaku pelanggan asli.
+Pakai fakta produk dan keberatan pelanggan sebagai bahan sudut pandang.`;
 
 export async function draftPlan(p: PlanInput, shape: string): Promise<PlanDraft> {
   if (!aiEnabled()) return demoPlan(p, shape);
@@ -83,4 +87,7 @@ export async function draftPlan(p: PlanInput, shape: string): Promise<PlanDraft>
   });
 }
 
-export const destinationFor = (d: Destination) => d;
+/** Retries copy that failed a check. Only runs with Claude, because rewriting a template changes nothing. */
+export async function rewriteCopy(d: CreativeDraft, issues: string[], p: PlanInput): Promise<CreativeDraft> {
+  return structured({ schema: CreativeDraft, effort: "medium", system: SYSTEM, user: JSON.stringify({ tugas: "Perbaiki iklan ini agar lolos pemeriksaan. Pertahankan sudut pandangnya.", iklan: d, masalah: issues, produk: p }) });
+}

@@ -3,9 +3,12 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
-import { adMetrics, budgetLimits, conversations, goalTemplates, knowledge, products, rulebooks, variants, workspaces, type GoalRules, type KnowledgeTopic, type OrderChannel, type OrderStatus } from "@/db/schema";
+import { newVersion, rollback } from "@/lib/rules";
+import { VOICES, type VoiceKey } from "@/lib/voice";
+import { adMetrics, budgetLimits, conversations, goalTemplates, knowledge, products, variants, workspaces, type GoalRules, type KnowledgeTopic, type OrderChannel, type OrderStatus } from "@/db/schema";
 import { draftFacts, runAiReadiness } from "@/lib/knowledge/service";
-import { POLICY_TOPICS } from "@/lib/knowledge/policies";
+import { KNOWLEDGE_TOPICS, POLICY_TOPICS } from "@/lib/knowledge/policies";
+import { adapterStatus } from "@/lib/adapters";
 import { fetchPublicText } from "@/lib/safe-fetch";
 import { saveUploadedImage } from "@/lib/assets/upload";
 import { runCloser } from "@/lib/ai/closer";
@@ -52,29 +55,39 @@ export async function pauseAd(id: string) {
 }
 export async function createPlan(productId: string) { await guard(async () => { await generatePlan(await needRole("approve"), productId); }); }
 
-export async function addFact(productId: string | null, topic: KnowledgeTopic, question: string, f: FormData) {
+export async function addFact(productId: string, topic: KnowledgeTopic, question: string, f: FormData) {
   const answer = str(f, "answer"); if (!answer) return;
   await guard(async () => {
     const ctx = await needRole("approve");
-    if (productId) await ownProduct(ctx, productId);
-    await ctx.db.insert(knowledge).values({ workspaceId: ctx.workspaceId, productId, topic, question, answer, status: "confirmed", source: "manual" });
+    await ownProduct(ctx, productId);
+    if (!KNOWLEDGE_TOPICS.includes(topic)) throw new Error("Topik tidak dikenal");
+    await ctx.db.insert(knowledge).values({ workspaceId: ctx.workspaceId, productId, topic, question: question.slice(0, 300), answer, status: "confirmed", source: "manual" });
   });
+}
+/** Store policies affect every product, so changing one needs the settings role. */
+async function factForEdit(id: string) {
+  const ctx = await needRole("approve");
+  const [row] = await ctx.db.select().from(knowledge).where(and(eq(knowledge.id, id), eq(knowledge.workspaceId, ctx.workspaceId)));
+  if (!row) throw new Error("Jawaban tidak ditemukan");
+  if (!row.productId && !can(ctx.member.role, "settings")) throw new Error("Peranmu tidak bisa mengubah kebijakan toko");
+  return ctx;
 }
 export async function confirmFact(id: string, f: FormData) {
   await guard(async () => {
-    const ctx = await needRole("approve");
+    const ctx = await factForEdit(id);
     await ctx.db.update(knowledge).set({ status: "confirmed", question: str(f, "question"), answer: str(f, "answer") }).where(and(eq(knowledge.id, id), eq(knowledge.workspaceId, ctx.workspaceId)));
   });
 }
 export async function deleteFact(id: string) {
   await guard(async () => {
-    const ctx = await needRole("approve");
+    const ctx = await factForEdit(id);
     await ctx.db.delete(knowledge).where(and(eq(knowledge.id, id), eq(knowledge.workspaceId, ctx.workspaceId)));
   });
 }
 export async function draftFromSource(productId: string, f: FormData) {
   await guard(async () => {
     const ctx = await needRole("approve");
+    await ownProduct(ctx, productId);
     const url = str(f, "url"); const text = str(f, "text");
     if (!url && !text) throw new Error("Isi link atau tempel teks dulu");
     const n = await draftFacts(ctx, productId, url ? await fetchPublicText(url) : text, url ? "link" : "manual");
@@ -164,6 +177,7 @@ export async function syncMeta() { await guard(async () => { await flash(`${awai
 export async function runMonitor() { await guard(async () => { await monitorAds(await getCtx()); }); }
 
 export async function customerSays(f: FormData) {
+  if (adapterStatus().whatsapp) { await flash("Simulator dimatikan karena WhatsApp sudah tersambung"); done(); return; }
   const phone = str(f, "phone").replace(/\D/g, ""); const text = str(f, "text");
   if (!phone || !text) return;
   const ctx = await getCtx();
@@ -216,13 +230,42 @@ export async function saveSettings(f: FormData) {
       quietHours: { startHour: Math.min(23, money(str(f, "quietStart"))), endHour: Math.min(23, money(str(f, "quietEnd"))) } } }).where(eq(workspaces.id, ctx.workspaceId));
   });
 }
-export async function saveRulebook(kind: "ads" | "whatsapp", f: FormData) {
+export async function toggleRule(kind: "ads" | "whatsapp", id: string) {
   await guard(async () => {
     const ctx = await needRole("settings");
-    const [cur] = await ctx.db.select({ v: sql<number>`coalesce(max(${rulebooks.version}),0)::int` }).from(rulebooks).where(and(eq(rulebooks.workspaceId, ctx.workspaceId), eq(rulebooks.kind, kind)));
-    await ctx.db.update(rulebooks).set({ active: false }).where(and(eq(rulebooks.workspaceId, ctx.workspaceId), eq(rulebooks.kind, kind)));
-    await ctx.db.insert(rulebooks).values({ workspaceId: ctx.workspaceId, kind, version: cur.v + 1, rules: lines(str(f, "rules")).map((text) => ({ id: crypto.randomUUID(), text })), tone: str(f, "tone"), createdBy: ctx.actor });
-    await logActivity(ctx, ctx.actor, `Membuat versi ${cur.v + 1} aturan ${kind}`, "", "/rules");
+    await newVersion(ctx, kind, (r) => ({ ...r, rules: r.rules.map((x) => x.id === id ? { ...x, enabled: x.enabled === false } : x) }), "");
+  });
+}
+export async function rollbackRules(kind: "ads" | "whatsapp") { await guard(async () => rollback(await needRole("settings"), kind)); }
+export async function addBlockedWord(f: FormData) {
+  const word = str(f, "word"); if (!word) return;
+  await guard(async () => {
+    const ctx = await needRole("settings");
+    await newVersion(ctx, "ads", (r) => ({ ...r, rules: [...r.rules, { id: crypto.randomUUID(), text: `Jangan pakai kata "${word}"`, source: "manual", block: word }] }), `Melarang "${word}"`);
+  });
+}
+export async function adoptReason(reason: string) {
+  await guard(async () => {
+    const ctx = await needRole("settings");
+    await newVersion(ctx, "ads", (r) => ({ ...r, rules: [...r.rules, { id: crypto.randomUUID(), text: `Hindari: ${reason}`, source: "decision" }] }), "Dari alasan penolakan iklan");
+  });
+}
+export async function setVoice(key: VoiceKey) {
+  await guard(async () => {
+    const ctx = await needRole("settings");
+    const v = VOICES[key];
+    await ctx.db.update(workspaces).set({ settings: { ...ctx.workspace.settings, voice: { key, adExample: v.ad, chatExample: v.chat } } }).where(eq(workspaces.id, ctx.workspaceId));
+    for (const kind of ["ads", "whatsapp"] as const) await newVersion(ctx, kind, (r) => ({ ...r, tone: v.tone }), `Gaya bicara: ${v.name}`);
+  });
+}
+export async function saveBrand(f: FormData) {
+  await guard(async () => {
+    const ctx = await needRole("settings");
+    const hex = (k: string, d: string) => /^#[0-9a-f]{6}$/i.test(str(f, k)) ? str(f, k) : d;
+    const cur = ctx.workspace.settings.brand;
+    const logo = f.get("logo");
+    const logoPath = logo instanceof File && logo.size ? await saveUploadedImage(logo, 4e6) : cur?.logoPath ?? null;
+    await ctx.db.update(workspaces).set({ settings: { ...ctx.workspace.settings, brand: { logoPath, primary: hex("primary", "#1B2483"), accent: hex("accent", "#F5B90F") } } }).where(eq(workspaces.id, ctx.workspaceId));
   });
 }
 export async function saveGoal(id: string, f: FormData) {

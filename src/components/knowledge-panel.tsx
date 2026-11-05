@@ -13,7 +13,7 @@ export async function KnowledgePanel({ ctx, p, t }: { ctx: Ctx; p: typeof produc
   const vs = await ctx.db.select().from(variants).where(eq(variants.productId, p.id));
   const cov = coverage(p, facts, vs.length);
   const gaps = cov.items.filter((i) => !i.covered);
-  const drafts = facts.filter((f) => f.status === "draft");
+  const drafts = facts.filter((f) => f.status === "draft" && f.productId === p.id);
   const confirmed = facts.filter((f) => f.status === "confirmed" && f.productId);
   const policies = facts.filter((f) => !f.productId);
   const ai = p.readiness;

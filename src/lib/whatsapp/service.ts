@@ -94,7 +94,7 @@ export async function answerAsHuman(ctx: Ctx, conversationId: string, text: stri
   const [conv] = await ctx.db.select().from(conversations).where(and(eq(conversations.id, conversationId), eq(conversations.workspaceId, ctx.workspaceId)));
   if (!conv) throw new Error("Percakapan tidak ditemukan");
   const res = await sendToCustomer(ctx, conversationId, text, "human");
-  if (res.sent && conv.handoffQuestion) {
+  if (res.sent && conv.handoffQuestion && conv.productId) {
     await ctx.db.insert(knowledge).values({ workspaceId: ctx.workspaceId, productId: conv.productId, topic: "faq", question: conv.handoffQuestion, answer: text, status: "draft", source: "chat" });
   }
   await ctx.db.update(conversations).set({ handler: "human", handoffReason: null, handoffQuestion: null }).where(eq(conversations.id, conversationId));

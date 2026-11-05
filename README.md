@@ -44,7 +44,8 @@ This prototype isn't ready to deploy yet. Generated assets are stored on local d
 
 ## How the code is arranged
 
-- `src/lib/ads/`: pause and scale rules, claims check, Meta adapter
+- `src/lib/ads/`: pause and scale rules, margin-based limits, creative checks, Meta adapter
+- `src/lib/knowledge/`: product facts, store policies, readiness test
 - `src/lib/whatsapp/`: official-rules check, Evolution adapter, inbound and send
 - `src/lib/ai/`: creative plan and the closer agent, whose tools exclude ads, budgets, and rules
 - `src/lib/pipeline.ts`: plan, approve, launch, monitor, simulate

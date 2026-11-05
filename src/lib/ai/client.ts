@@ -10,7 +10,7 @@ export const claude = () => new Anthropic();
 export class AiRefusal extends Error {}
 
 /** Structured call used for creative steps. Declined requests fall back server-side, then raise AiRefusal. */
-export async function structured<S extends z.ZodType>(opts: { schema: S; system: string; user: string; effort: "low" | "medium" | "high" }): Promise<z.infer<S>> {
+export async function structured<S extends z.ZodType>(opts: { schema: S; system: string; user: string | unknown[]; effort: "low" | "medium" | "high" }): Promise<z.infer<S>> {
   const res = await claude().beta.messages.parse({
     model: MODEL,
     max_tokens: 16000,

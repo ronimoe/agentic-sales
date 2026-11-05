@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { createLocalDb } from "@/db/client";
 import { adMetrics, budgetLimits, campaigns, contacts, conversations, creatives, knowledge, messages, objections, orders, products, variants, workspaces } from "@/db/schema";
 import { setupWorkspace } from "./seed";
-import { approveCreative, generatePlan, rejectCreative, syncFromMeta } from "./pipeline";
+import { approveCreative, generatePlan, monitorAds, rejectCreative, syncFromMeta } from "./pipeline";
 import { answerAsHuman, receiveInbound, sendToCustomer } from "./whatsapp/service";
 import { closerActions, CLOSER_TOOL_NAMES, runCloser } from "./ai/closer";
 import { factsFor, runAiReadiness } from "./knowledge/service";
@@ -179,6 +179,38 @@ describe("sale traced to its angle", () => {
     expect(results.length).toBeGreaterThan(15);
     for (const t of [orders, messages, conversations, objections]) expect(await db.select().from(t)).toHaveLength(0);
     expect((await db.select().from(products).where(eq(products.id, p.id)))[0].stock).toBe(3);
+  });
+
+  it("retries failed copy within a limit, and blocks what still fails", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Blender", priceIdr: 100000, costIdr: 1, stock: 5, neverSay: ["kenalan"], visual: { shape: "box", color: "#2B3AA8" } }).returning();
+    const calls: string[][] = [];
+    await generatePlan(a, p.id, { rewrite: async (d, issues) => { calls.push(issues); return d; } });
+    expect(calls.length).toBe(4);
+    const all = await db.select().from(creatives).where(eq(creatives.workspaceId, a.workspaceId));
+    const bad = all.find((c) => c.attempts === 3)!;
+    expect(bad.compliance.passed).toBe(false);
+    await expect(approveCreative(a, bad.id)).rejects.toThrow(/kenalan/);
+    const video = all.find((c) => c.format === "video")!;
+    expect(video.checks.find((x) => x.key === "format")).toMatchObject({ status: "pass" });
+    expect(video.checks.find((x) => x.key === "ai_visual")?.status).toBe("not_run");
+    expect(video.script).toBeTruthy();
+  });
+
+  it("blocks stale price and empty stock at approval, and pauses live ads when stock runs out", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Blender", priceIdr: 100000, costIdr: 1, stock: 5, visual: { shape: "box", color: "#2B3AA8" } }).returning();
+    await generatePlan(a, p.id);
+    const [x, y] = await db.select().from(creatives).where(eq(creatives.workspaceId, a.workspaceId));
+    await approveCreative(a, x.id);
+    await db.update(products).set({ priceIdr: 120000 }).where(eq(products.id, p.id));
+    await expect(approveCreative(a, y.id)).rejects.toThrow(/Harga/);
+    await db.update(products).set({ priceIdr: 100000, stock: 0 }).where(eq(products.id, p.id));
+    await expect(approveCreative(a, y.id)).rejects.toThrow(/Stok/);
+    await monitorAds(a);
+    expect((await db.select().from(creatives).where(eq(creatives.id, x.id)))[0]).toMatchObject({ status: "paused", pauseReason: "Stok Blender habis" });
   });
 
   it("gives the closer no ad, budget, or rule tools", () => {

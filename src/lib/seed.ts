@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { budgetLimits, campaigns, creatives, goalTemplates, knowledge, members, products, rulebooks, variants, workspaces, type GoalKey, type GoalRules, type KnowledgeTopic, type WorkspaceSettings } from "@/db/schema";
+import { budgetLimits, campaigns, creatives, goalTemplates, knowledge, members, products, rulebooks, variants, workspaces, type GoalKey, type GoalRules, type KnowledgeTopic, type Rule, type WorkspaceSettings } from "@/db/schema";
 import { getDb } from "@/db/client";
 import { adapterStatus } from "./adapters";
 import { approveCreative, generatePlan, simulateDay } from "./pipeline";
@@ -17,8 +17,17 @@ const GOALS: { key: GoalKey; name: string; briefFormat: string; rules: GoalRules
   { key: "retargeting", name: "Tawarkan ulang", briefFormat: "Testimoni dan jawaban atas keberatan", rules: { primaryMetric: "cost_per_sale", targetIdr: 35000, pauseSpendWithoutResultIdr: 200000, pauseOverTargetRatio: 1.6, maxFrequency: 5, scaleUnderTargetRatio: 0.8, scaleStepPct: 15 } },
 ];
 
-const AD_RULES = ["Tulis dalam Bahasa Indonesia sehari-hari", "Tampilkan harga pada iklan penjualan", "Hanya gunakan klaim yang disetujui", "larang: paling murah"];
-const WA_RULES = ["Sapa dengan Kak", "Balas maksimal tiga kalimat", "Selalu tawarkan COD atau transfer", "Serahkan ke tim jika ada komplain"];
+const AD_RULES: Rule[] = [
+  { id: "stop_no_stock", text: "Jeda iklan saat stok habis", source: "default" },
+  { id: "show_price", text: "Tampilkan harga pada iklan penjualan", source: "default" },
+  { id: "plain_language", text: "Tulis dalam Bahasa Indonesia sehari-hari", source: "default" },
+  { id: "no_cheapest", text: "Jangan pakai kata \"paling murah\"", source: "default", block: "paling murah" },
+];
+const WA_RULES: Rule[] = [
+  { id: "call_kak", text: "Sapa pelanggan dengan Kak", source: "default" },
+  { id: "short", text: "Balas maksimal tiga kalimat", source: "default" },
+  { id: "offer_pay", text: "Tawarkan COD atau transfer saat pelanggan siap membeli", source: "default" },
+];
 
 export async function setupWorkspace(db: Ctx["db"], name: string, owner: string): Promise<Ctx> {
   const [w] = await db.insert(workspaces).values({ name, settings: SETTINGS }).returning();
@@ -29,10 +38,9 @@ export async function setupWorkspace(db: Ctx["db"], name: string, owner: string)
     { workspaceId, kind: "ads_daily", amountIdr: 3000000 }, { workspaceId, kind: "ads_monthly", amountIdr: 40000000 },
     { workspaceId, kind: "assets_monthly", amountIdr: 1000000 }, { workspaceId, kind: "ai_monthly", amountIdr: 1000000 }, { workspaceId, kind: "whatsapp_monthly", amountIdr: 500000 },
   ]);
-  const mk = (t: string[]) => t.map((text) => ({ id: crypto.randomUUID(), text }));
   await db.insert(rulebooks).values([
-    { workspaceId, kind: "ads", version: 1, rules: mk(AD_RULES), tone: "Akrab, jelas, tidak lebay", createdBy: owner },
-    { workspaceId, kind: "whatsapp", version: 1, rules: mk(WA_RULES), tone: "Ramah seperti penjaga toko yang paham produknya", createdBy: owner },
+    { workspaceId, kind: "ads", version: 1, rules: AD_RULES, tone: "Akrab, jelas, tidak lebay", createdBy: owner },
+    { workspaceId, kind: "whatsapp", version: 1, rules: WA_RULES, tone: "Ramah seperti penjaga toko yang paham produknya", createdBy: owner },
   ]);
   return { db, workspaceId, actor: owner };
 }

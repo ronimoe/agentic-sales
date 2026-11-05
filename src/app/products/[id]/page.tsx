@@ -4,6 +4,7 @@ import { angles, campaignPlans, campaigns, creatives, products } from "@/db/sche
 import Link from "next/link";
 import { createPlan } from "@/app/actions";
 import { KnowledgePanel } from "@/components/knowledge-panel";
+import { suggestLimits } from "@/lib/ads/limits";
 import { getCtx } from "@/lib/ctx";
 import { idr, num, pct } from "@/lib/format";
 import { getT } from "@/lib/i18n";
@@ -21,6 +22,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
   const ang = await ctx.db.select().from(angles).where(eq(angles.productId, id)).orderBy(desc(angles.createdAt));
   const results = await bestAngles(ctx, id);
   const P = t.products;
+  const lim = suggestLimits(p);
   return (
     <div>
       <p className="hint tabular">{idr(p.priceIdr)}, {P.margin.toLowerCase()} {pct(p.priceIdr ? (p.priceIdr - p.costIdr) / p.priceIdr : 0)}, {P.stock.toLowerCase()} {p.stock}</p>
@@ -50,6 +52,12 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
           );
         })}
       </ul>
+
+      <section className="mt-8 max-w-3xl rounded-2xl bg-nila-soft px-4 py-3">
+        <h2 className="font-bold">{P.limits}</h2>
+        <p>{P.limitsLine(idr(p.targetCostIdr ?? lim.targetIdr), idr(p.stopSpendIdr ?? lim.stopSpendIdr))}</p>
+        <p className="hint">{p.targetCostIdr || p.stopSpendIdr ? P.limitsOwn : P.limitsWhy(idr(lim.net), idr(lim.returnLoss))}</p>
+      </section>
 
       <KnowledgePanel ctx={ctx} p={p} t={P} />
 

@@ -18,13 +18,14 @@ export default async function Approvals() {
   const items = rows.map(({ c, camp, a: an, p }) => ({
     id: c.id, hook: c.hook, primaryText: c.primaryText, headline: c.headline, cta: c.cta, format: c.format, assetPath: c.assetPath, posterPath: c.posterPath,
     goal: t.goal[camp.goal], dest: t.dest[camp.destination], budget: idr(camp.dailyBudgetIdr), angle: an.title, audience: an.audience, product: p.name,
-    opener: c.whatsappOpener, form: c.formQuestions, passed: c.compliance.passed, issues: c.compliance.issues,
+    opener: c.whatsappOpener, form: c.formQuestions, passed: c.compliance.passed, issues: c.compliance.issues, checks: c.checks, attempts: c.attempts, attemptsText: a.attempts(c.attempts - 1), script: c.script,
   }));
+  const labels = { ...a, left: a.left(rows.length), attempts: undefined };
   return (
     <div>
       <div className="mb-5 flex items-baseline justify-between gap-3"><h1 className="h1">{a.title}</h1><p className="font-semibold tabular">{a.left(rows.length)}</p></div>
       {!can(ctx.member.role, "approve") && <p className="mb-4 rounded-xl bg-kunyit-soft px-4 py-2">{a.noPerm}</p>}
-      <Reviewer items={items} canApprove={can(ctx.member.role, "approve")} l={{ ...a, left: a.left(rows.length) }} />
+      <Reviewer items={items} canApprove={can(ctx.member.role, "approve")} l={labels} />
     </div>
   );
 }
