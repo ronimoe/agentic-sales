@@ -1,14 +1,15 @@
 import { notFound } from "next/navigation";
 import { and, desc, eq } from "drizzle-orm";
-import { angles, campaignPlans, campaigns, creatives, products } from "@/db/schema";
+import { campaignPlans, campaigns, creatives, products } from "@/db/schema";
 import Link from "next/link";
 import { createPlan } from "@/app/actions";
+import { AngleBoard } from "@/components/angle-board";
 import { KnowledgePanel } from "@/components/knowledge-panel";
 import { suggestLimits } from "@/lib/ads/limits";
 import { getCtx } from "@/lib/ctx";
 import { idr, num, pct } from "@/lib/format";
 import { getT } from "@/lib/i18n";
-import { adScore, bestAngles, scorecard } from "@/lib/queries";
+import { adScore, scorecard } from "@/lib/queries";
 
 export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -19,8 +20,6 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
   const ads = await ctx.db.select().from(creatives).innerJoin(campaigns, eq(creatives.campaignId, campaigns.id)).where(eq(campaigns.productId, id));
   const score = await adScore(ctx, ads.map((a) => a.creatives.id));
   const [plan] = await ctx.db.select().from(campaignPlans).where(eq(campaignPlans.productId, id)).orderBy(desc(campaignPlans.createdAt)).limit(1);
-  const ang = await ctx.db.select().from(angles).where(eq(angles.productId, id)).orderBy(desc(angles.createdAt));
-  const results = await bestAngles(ctx, id);
   const P = t.products;
   const lim = suggestLimits(p);
   return (
@@ -61,12 +60,9 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
 
       <KnowledgePanel ctx={ctx} p={p} t={P} />
 
-      <div className="mt-10 grid gap-8 md:grid-cols-[1.3fr_1fr]">
-        <section><h2 className="h2 mb-2">{P.angles}</h2>
-          <ul>{ang.map((a) => { const r = results.find((x) => x.id === a.id); return (
-            <li key={a.id} className="rowline flex justify-between gap-4 py-2.5"><div><p className="font-semibold">{a.title}</p><p className="hint">{a.audience}. {a.pain}.</p></div>{r && <p className="shrink-0 text-right font-bold tabular">{idr(r.profit)}<span className="hint block font-normal">{r.sales} {P.sold}</span></p>}</li>
-          ); })}</ul>
-        </section>
+      <AngleBoard ctx={ctx} productId={p.id} t={t} />
+
+      <div className="mt-10 max-w-3xl">
         <section><h2 className="h2 mb-2">{P.facts}</h2>
           <dl>{[[P.desc, p.description], [P.bpom, p.bpomNumber], [P.halal, p.halalStatus], [P.claims, p.approvedClaims.join(", ")], [P.proof, p.proof.join(", ")]].map(([k, v]) => <div key={k} className="rowline py-2"><dt className="hint">{k}</dt><dd>{v || <span className="hint">{P.none}</span>}</dd></div>)}</dl>
         </section>

@@ -1,7 +1,9 @@
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
 import { adMetrics, campaignPlans, campaigns, angles, conversations, creatives, goalTemplates, objections, orders, products, rulebooks, workspaces, type CreativeCheck, type GoalKey, type OrderChannel } from "@/db/schema";
 import { applyVoice } from "./voice";
-import { draftPlan, rewriteCopy, type CreativeDraft, type PlanInput } from "./ai/creative";
+import { draftAngles, draftCreative, rewriteCopy, type AngleDraft, type CreativeDraft, type PlanInput } from "./ai/creative";
+import { angleCapacity, compareCells, findDuplicate, PER_ANGLE_GOAL_IDR, TEST_GOALS, type Cell, type CellResult } from "./angles/logic";
+import { adScore } from "./queries";
 import { reviewVisual } from "./ai/visual";
 import { factsFor } from "./knowledge/service";
 import { fileChecks, failed, textChecks } from "./ads/checks";
@@ -33,81 +35,213 @@ const MAX_ATTEMPTS = 3;
 
 const hookType = (h: string) => h.includes("?") ? "pertanyaan" : /\b(stop|jangan|telat|ragu|takut|pegal|kusam)\b/i.test(h) ? "masalah" : "manfaat";
 
-export async function generatePlan(ctx: Ctx, productId: string, opts: { rewrite?: Rewriter; review?: VisualReviewer } = {}) {
+type BuildOpts = { rewrite?: Rewriter; review?: VisualReviewer };
+type AngleRow = typeof angles.$inferSelect;
+
+async function planInput(ctx: Ctx, p: typeof products.$inferSelect) {
   const { db, workspaceId } = ctx;
-  const [p] = await db.select().from(products).where(and(eq(products.id, productId), eq(products.workspaceId, workspaceId)));
-  if (!p) throw new Error("Produk tidak ditemukan");
   const [w] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
   const rb = await activeRules(ctx, "ads");
   const goals = await db.select().from(goalTemplates).where(eq(goalTemplates.workspaceId, workspaceId));
   const enabled = rb?.rules.filter((r) => r.enabled !== false) ?? [];
-  const blocked = enabled.map((r) => r.block).filter((x): x is string => !!x);
-  const showPrice = enabled.some((r) => r.id === "show_price");
-  const facts = await factsFor(ctx, productId);
-  const objs = await db.select({ text: objections.text }).from(objections).where(eq(objections.productId, productId)).limit(20);
-
+  const facts = await factsFor(ctx, p.id);
+  const objs = await db.select({ text: objections.text }).from(objections).where(eq(objections.productId, p.id)).limit(20);
   const input: PlanInput = {
     name: p.name, description: p.description, priceIdr: p.priceIdr, costIdr: p.costIdr, approvedClaims: p.approvedClaims, proof: p.proof,
     rules: enabled.map((r) => r.text), tone: rb?.tone ?? "", goals: goals.map((g) => ({ key: g.key, name: g.name, briefFormat: g.briefFormat })),
     alwaysSay: p.alwaysSay, neverSay: p.neverSay, facts: facts.map((f) => `${f.question} ${f.answer}`), objections: objs.map((o) => o.text), voiceExample: w.settings.voice?.adExample ?? "",
   };
-  if (aiEnabled()) await assertRoom(ctx, "ai", PLAN_AI_ESTIMATE);
-  const draft = await draftPlan(input, p.visual.shape);
-  if (!aiEnabled()) for (const c of draft.campaigns) for (const d of c.creatives) { d.primaryText = applyVoice(d.primaryText, w.settings.voice?.key); d.hook = applyVoice(d.hook, w.settings.voice?.key); }
-  if (aiEnabled()) await logUsage(ctx, "ai", PLAN_AI_ESTIMATE, false, `Rencana ${p.name} (perkiraan)`);
-  const total = draft.campaigns.flatMap((c) => c.creatives).reduce((s, c) => s + ASSET_COST[c.format], 0);
-  await assertRoom(ctx, "assets", total);
+  return { w, input, goals, blocked: enabled.map((r) => r.block).filter((x): x is string => !!x), showPrice: enabled.some((r) => r.id === "show_price") };
+}
 
+async function buildCreative(ctx: Ctx, base: Awaited<ReturnType<typeof planInput>>, p: typeof products.$inferSelect, camp: typeof campaigns.$inferSelect, angle: AngleRow, format: "image" | "video", opts: BuildOpts) {
+  const { db, workspaceId } = ctx;
+  const { w, input, blocked, showPrice } = base;
+  await assertRoom(ctx, "assets", ASSET_COST[format]);
+  if (aiEnabled()) await assertRoom(ctx, "ai", REWRITE_AI_ESTIMATE);
+  let d = await draftCreative(input, angle, camp.goal, format);
+  if (aiEnabled()) await logUsage(ctx, "ai", REWRITE_AI_ESTIMATE, false, `Iklan ${p.name} (perkiraan)`);
+  else { d.primaryText = applyVoice(d.primaryText, w.settings.voice?.key); d.hook = applyVoice(d.hook, w.settings.voice?.key); }
   const rewrite = opts.rewrite ?? (aiEnabled() ? rewriteCopy : null);
   const review = opts.review ?? (aiEnabled() ? reviewVisual : null);
-  const [plan] = await db.insert(campaignPlans).values({ workspaceId, productId, rationale: draft.rationale }).returning();
-  const savedAngles = await db.insert(angles).values(draft.angles.map((a) => ({ workspaceId, productId, ...a }))).returning();
+  let attempts = 1;
+  let copyChecks = textChecks(d, p, blocked, camp.goal);
+  while (failed(copyChecks).length && rewrite && attempts < MAX_ATTEMPTS) {
+    await assertRoom(ctx, "ai", REWRITE_AI_ESTIMATE);
+    d = await rewrite(d, failed(copyChecks).map((x) => x.detail ?? x.label), input);
+    await logUsage(ctx, "ai", REWRITE_AI_ESTIMATE, !aiEnabled(), `Perbaikan iklan ${p.name} (perkiraan)`);
+    attempts++;
+    copyChecks = textChecks(d, p, blocked, camp.goal);
+  }
+  const id = crypto.randomUUID();
+  const prices = showPrice && camp.goal !== "eyeball";
+  const files = await renderCreative({
+    id, goal: camp.goal, hook: d.hook, line2: d.headline, cta: d.cta, productName: p.name, priceIdr: p.priceIdr, brandName: w.name, brand: w.settings.brand,
+    visual: p.visual, photoPath: p.photoPath, format, showPrice: prices, aiLabel: w.settings.aiLabelAds,
+  });
+  const checks: CreativeCheck[] = [
+    ...copyChecks,
+    ...await fileChecks(path.join(ASSET_DIR, files.assetPath), format, MAX_SECONDS[camp.goal] ?? 30),
+    { key: "price", label: "Harga dicetak sistem", status: "pass", detail: prices ? idr(p.priceIdr) : "Tanpa harga" },
+    p.photoPath ? { key: "photo", label: "Foto produk asli", status: "pass" } : { key: "photo", label: "Foto produk asli", status: "warn", detail: "Masih ilustrasi contoh. Unggah foto asli sebelum tayang sungguhan." },
+    review ? await review(files.frames, p.name, p.photoPath) : { key: "ai_visual", label: "Tinjauan visual AI", status: "not_run", detail: "Butuh Claude" },
+  ];
+  const bad = failed(checks);
+  await db.insert(creatives).values({
+    id, workspaceId, campaignId: camp.id, angleId: angle.id, concept: d.concept, format, hook: d.hook,
+    primaryText: d.primaryText, headline: d.headline, cta: d.cta, whatsappOpener: d.whatsappOpener, formQuestions: d.formQuestions, script: d.script,
+    refCode: newRef(), compliance: { passed: bad.length === 0, issues: bad.map((x) => x.detail ?? x.label) }, checks, attempts, stampedPriceIdr: p.priceIdr,
+    tags: { hookType: hookType(d.hook), angleType: angle.type, format, seconds: files.seconds, visualSource: p.photoPath ? "foto" : "ilustrasi", hasPerson: false },
+    assetPath: files.assetPath, posterPath: files.posterPath,
+  });
+  await logUsage(ctx, "assets", ASSET_COST[format], true, `${format} ${p.name}`);
+}
 
+async function ownedProduct(ctx: Ctx, productId: string) {
+  const [p] = await ctx.db.select().from(products).where(and(eq(products.id, productId), eq(products.workspaceId, ctx.workspaceId)));
+  if (!p) throw new Error("Produk tidak ditemukan");
+  return p;
+}
+
+/** Adds new angle ideas, skipping anything too close to what this product already has. */
+export async function draftMoreAngles(ctx: Ctx, productId: string) {
+  const p = await ownedProduct(ctx, productId);
+  const { input } = await planInput(ctx, p);
+  const existing = await ctx.db.select().from(angles).where(and(eq(angles.productId, productId), eq(angles.workspaceId, ctx.workspaceId)));
+  if (aiEnabled()) await assertRoom(ctx, "ai", PLAN_AI_ESTIMATE);
+  const draft = await draftAngles(input, p.visual.shape, existing.map((a) => a.title));
+  if (aiEnabled()) await logUsage(ctx, "ai", PLAN_AI_ESTIMATE, false, `Sudut pandang ${p.name} (perkiraan)`);
+  const kept: AngleDraft[] = [];
+  for (const a of draft.angles) if (!findDuplicate(a, [...existing, ...kept])) kept.push(a);
+  if (kept.length) await ctx.db.insert(angles).values(kept.map((a) => ({ workspaceId: ctx.workspaceId, productId, ...a })));
+  return { added: kept.length, rationale: draft.rationale };
+}
+
+/** Starts testing as many ideas as the budget can support, each with the same goals, format, and budget. */
+export async function generatePlan(ctx: Ctx, productId: string, opts: BuildOpts = {}) {
+  const { db, workspaceId } = ctx;
+  const p = await ownedProduct(ctx, productId);
+  const more = await draftMoreAngles(ctx, productId);
+  const ideas = await db.select().from(angles).where(and(eq(angles.productId, productId), eq(angles.status, "idea"))).orderBy(asc(angles.createdAt));
+  if (!ideas.length) throw new Error("Belum ada ide sudut pandang baru. Tambahkan sendiri, atau hubungkan Claude untuk ide baru.");
+  const room = (await getLimit(ctx, "ads_daily")) - (await liveDailyTotal(ctx));
+  const picked = ideas.slice(0, Math.max(1, angleCapacity(room)));
+  const base = await planInput(ctx, p);
+  const [plan] = await db.insert(campaignPlans).values({ workspaceId, productId, rationale: more.rationale || `Menguji ${picked.length} sudut pandang.` }).returning();
+
+  const hadCampaigns = (await db.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.productId, productId)).limit(1)).length > 0;
+  const name = (g: GoalKey) => `${p.name}: ${base.goals.find((x) => x.key === g)?.name ?? g}`;
   let count = 0;
-  for (const c of draft.campaigns) {
-    const goal = goals.find((g) => g.key === c.goal);
-    const [camp] = await db.insert(campaigns).values({
-      workspaceId, planId: plan.id, productId, goal: c.goal as GoalKey, destination: c.destination,
-      name: `${p.name}: ${goal?.name ?? c.goal}`, dailyBudgetIdr: c.dailyBudgetIdr,
-    }).returning();
-    for (const original of c.creatives) {
-      const id = crypto.randomUUID();
-      const angle = savedAngles[original.angleIndex] ?? savedAngles[0];
-      let d = original; let attempts = 1;
-      let copyChecks = textChecks(d, p, blocked, c.goal as GoalKey);
-      while (failed(copyChecks).length && rewrite && attempts < MAX_ATTEMPTS) {
-        await assertRoom(ctx, "ai", REWRITE_AI_ESTIMATE);
-        d = await rewrite(d, failed(copyChecks).map((x) => x.detail ?? x.label), input);
-        await logUsage(ctx, "ai", REWRITE_AI_ESTIMATE, !aiEnabled(), `Perbaikan iklan ${p.name} (perkiraan)`);
-        attempts++;
-        copyChecks = textChecks(d, p, blocked, c.goal as GoalKey);
-      }
-      const prices = showPrice && c.goal !== "eyeball";
-      const files = await renderCreative({
-        id, goal: c.goal as GoalKey, hook: d.hook, line2: d.headline, cta: d.cta, productName: p.name, priceIdr: p.priceIdr, brandName: w.name, brand: w.settings.brand,
-        visual: p.visual, photoPath: p.photoPath, format: d.format, showPrice: prices, aiLabel: w.settings.aiLabelAds,
-      });
-      const checks: CreativeCheck[] = [
-        ...copyChecks,
-        ...await fileChecks(path.join(ASSET_DIR, files.assetPath), d.format, MAX_SECONDS[c.goal] ?? 30),
-        { key: "price", label: "Harga dicetak sistem", status: "pass", detail: prices ? idr(p.priceIdr) : "Tanpa harga" },
-        p.photoPath ? { key: "photo", label: "Foto produk asli", status: "pass" } : { key: "photo", label: "Foto produk asli", status: "warn", detail: "Masih ilustrasi contoh. Unggah foto asli sebelum tayang sungguhan." },
-        review ? await review(files.frames, p.name, p.photoPath) : { key: "ai_visual", label: "Tinjauan visual AI", status: "not_run", detail: "Butuh Claude" },
-      ];
-      const bad = failed(checks);
-      await db.insert(creatives).values({
-        id, workspaceId, campaignId: camp.id, angleId: angle.id, concept: d.concept, format: d.format, hook: d.hook,
-        primaryText: d.primaryText, headline: d.headline, cta: d.cta, whatsappOpener: d.whatsappOpener, formQuestions: d.formQuestions, script: d.script,
-        refCode: newRef(), compliance: { passed: bad.length === 0, issues: bad.map((x) => x.detail ?? x.label) }, checks, attempts, stampedPriceIdr: p.priceIdr,
-        tags: { hookType: hookType(d.hook), format: d.format, seconds: files.seconds, visualSource: p.photoPath ? "foto" : "ilustrasi", hasPerson: false },
-        assetPath: files.assetPath, posterPath: files.posterPath,
-      });
-      await logUsage(ctx, "assets", ASSET_COST[d.format], true, `${d.format} ${p.name}`);
-      count++;
+  for (const t of TEST_GOALS) {
+    const [camp] = await db.insert(campaigns).values({ workspaceId, planId: plan.id, productId, goal: t.goal, destination: t.destination, name: name(t.goal), dailyBudgetIdr: PER_ANGLE_GOAL_IDR * picked.length }).returning();
+    for (const a of picked) { await buildCreative(ctx, base, p, camp, a, t.format, opts); count++; }
+  }
+  if (!hadCampaigns) {
+    for (const [goal, destination, budget] of [["form", "form", 100000], ["retargeting", "tokopedia", 75000]] as const) {
+      const [camp] = await db.insert(campaigns).values({ workspaceId, planId: plan.id, productId, goal, destination, name: name(goal), dailyBudgetIdr: budget }).returning();
+      await buildCreative(ctx, base, p, camp, picked[0], "image", opts); count++;
     }
   }
-  await logActivity(ctx, "Tim kreatif", `Menyiapkan ${count} iklan untuk ${p.name}`, draft.rationale, "/approvals");
+  await db.update(angles).set({ status: "testing" }).where(inArray(angles.id, picked.map((a) => a.id)));
+  await logActivity(ctx, "Tim kreatif", `Menyiapkan ${count} iklan untuk ${picked.length} sudut pandang ${p.name}`, plan.rationale, "/approvals");
   return plan;
+}
+
+/** Puts one more angle into the existing test campaigns. Its ads still wait for approval. */
+export async function testAngle(ctx: Ctx, angleId: string, opts: BuildOpts = {}) {
+  const { db, workspaceId } = ctx;
+  const [angle] = await db.select().from(angles).where(and(eq(angles.id, angleId), eq(angles.workspaceId, workspaceId)));
+  if (!angle) throw new Error("Sudut pandang tidak ditemukan");
+  if (angle.status !== "idea") return 0;
+  const p = await ownedProduct(ctx, angle.productId);
+  const base = await planInput(ctx, p);
+  let count = 0;
+  for (const t of TEST_GOALS) {
+    let [camp] = await db.select().from(campaigns).where(and(eq(campaigns.productId, p.id), eq(campaigns.goal, t.goal))).orderBy(desc(campaigns.createdAt)).limit(1);
+    if (!camp) {
+      const [plan] = await db.insert(campaignPlans).values({ workspaceId, productId: p.id, rationale: `Menguji "${angle.title}".` }).returning();
+      [camp] = await db.insert(campaigns).values({ workspaceId, planId: plan.id, productId: p.id, goal: t.goal, destination: t.destination, name: `${p.name}: ${base.goals.find((x) => x.key === t.goal)?.name ?? t.goal}`, dailyBudgetIdr: PER_ANGLE_GOAL_IDR }).returning();
+    }
+    await buildCreative(ctx, base, p, camp, angle, t.format, opts); count++;
+  }
+  await db.update(angles).set({ status: "testing", stopReason: null }).where(eq(angles.id, angle.id));
+  await logActivity(ctx, "Tim kreatif", `Menyiapkan ${count} iklan untuk "${angle.title}"`, "Menunggu persetujuanmu", "/approvals");
+  return count;
+}
+
+export async function addManualAngle(ctx: Ctx, productId: string, a: { title: string; audience: string; pain: string; promise: string; proof: string; hook: string }) {
+  await ownedProduct(ctx, productId);
+  const existing = await ctx.db.select().from(angles).where(and(eq(angles.productId, productId), eq(angles.workspaceId, ctx.workspaceId)));
+  const dup = findDuplicate(a, existing);
+  await ctx.db.insert(angles).values({ workspaceId: ctx.workspaceId, productId, ...a, type: "problem", source: "manual" });
+  return dup?.title ?? null;
+}
+
+/** Stopping an angle pauses its live ads and removes its waiting ads. */
+export async function stopAngle(ctx: Ctx, angleId: string, reason: string) {
+  const { db, workspaceId } = ctx;
+  const [angle] = await db.select().from(angles).where(and(eq(angles.id, angleId), eq(angles.workspaceId, workspaceId)));
+  if (!angle) throw new Error("Sudut pandang tidak ditemukan");
+  const platform = adsPlatform();
+  const ads = await db.select().from(creatives).where(eq(creatives.angleId, angleId));
+  for (const c of ads) {
+    if (c.status === "live") {
+      const id = platform.simulated ? null : realId(c.externalId);
+      if (id) await platform.pause(id);
+      await db.update(creatives).set({ status: "paused", pauseReason: reason }).where(eq(creatives.id, c.id));
+      const others = await db.select({ id: creatives.id }).from(creatives).where(and(eq(creatives.campaignId, c.campaignId), eq(creatives.status, "live")));
+      if (!others.length) await db.update(campaigns).set({ status: "paused" }).where(eq(campaigns.id, c.campaignId));
+    } else if (c.status === "in_review") {
+      await db.update(creatives).set({ status: "rejected", rejectReason: reason }).where(eq(creatives.id, c.id));
+    }
+  }
+  await db.update(angles).set({ status: "stopped", stopReason: reason }).where(eq(angles.id, angleId));
+  await logActivity(ctx, ctx.actor, `Menghentikan "${angle.title}"`, reason, `/products/${angle.productId}`);
+}
+
+export async function restoreAngle(ctx: Ctx, angleId: string) {
+  await ctx.db.update(angles).set({ status: "idea", stopReason: null }).where(and(eq(angles.id, angleId), eq(angles.workspaceId, ctx.workspaceId), eq(angles.status, "stopped")));
+}
+
+export async function angleCells(ctx: Ctx, productId?: string): Promise<CellResult[]> {
+  const rows = await ctx.db.select({ id: creatives.id, angleId: creatives.angleId, goal: campaigns.goal }).from(creatives).innerJoin(campaigns, eq(creatives.campaignId, campaigns.id))
+    .where(and(eq(creatives.workspaceId, ctx.workspaceId), productId ? eq(campaigns.productId, productId) : undefined));
+  const score = await adScore(ctx, rows.map((r) => r.id));
+  const map = new Map<string, Cell>();
+  for (const r of rows) {
+    const s = score.get(r.id)!; const k = `${r.angleId}:${r.goal}`;
+    const c = map.get(k) ?? { angleId: r.angleId, goal: r.goal, spend: 0, reach: 0, qualified: 0, sales: 0 };
+    c.spend += s.spend; c.reach += s.reach; c.qualified += s.qualified; c.sales += s.sales; map.set(k, c);
+  }
+  return compareCells([...map.values()]);
+}
+
+/** After ad rules run: angles with nothing left running stop, clear leaders win, and the next idea takes a stopped angle's place. */
+async function reviewAngles(ctx: Ctx, at: Date) {
+  const { db, workspaceId } = ctx;
+  const list = await db.select().from(angles).where(and(eq(angles.workspaceId, workspaceId), inArray(angles.status, ["testing", "winning"])));
+  const byProduct = new Map<string, AngleRow[]>();
+  for (const a of list) byProduct.set(a.productId, [...(byProduct.get(a.productId) ?? []), a]);
+  for (const [productId, group] of byProduct) {
+    const cells = await angleCells(ctx, productId);
+    for (const a of group) {
+      const ads = await db.select({ status: creatives.status, reason: creatives.pauseReason }).from(creatives).where(eq(creatives.angleId, a.id));
+      const active = ads.some((c) => c.status === "live" || c.status === "in_review" || c.status === "approved");
+      if (!active && ads.some((c) => c.status === "paused")) {
+        const reason = ads.find((c) => c.reason)?.reason ?? "Semua iklannya dijeda";
+        await db.update(angles).set({ status: "stopped", stopReason: reason }).where(eq(angles.id, a.id));
+        await logActivity(ctx, "Media buyer", `Menghentikan sudut pandang "${a.title}"`, reason, `/products/${productId}`, at);
+        const [next] = await db.select().from(angles).where(and(eq(angles.productId, productId), eq(angles.status, "idea"))).orderBy(asc(angles.createdAt)).limit(1);
+        if (next) await testAngle(ctx, next.id).catch((e) => { if (!(e instanceof BudgetError)) throw e; });
+        continue;
+      }
+      const wins = cells.some((c) => c.angleId === a.id && c.best);
+      if (wins !== (a.status === "winning")) {
+        await db.update(angles).set({ status: wins ? "winning" : "testing" }).where(eq(angles.id, a.id));
+        if (wins) await logActivity(ctx, "Media buyer", `"${a.title}" memimpin`, "Biaya per hasilnya jelas lebih rendah pada tujuan yang sama", `/products/${productId}`, at);
+      }
+    }
+  }
 }
 
 export async function approveCreative(ctx: Ctx, creativeId: string) {
@@ -117,9 +251,19 @@ export async function approveCreative(ctx: Ctx, creativeId: string) {
   if (!c.compliance.passed) throw new Error(`Perbaiki dulu: ${c.compliance.issues.join(", ")}`);
   const [camp] = await db.select().from(campaigns).where(eq(campaigns.id, c.campaignId));
   if (await usedThisMonth(ctx, "ads") >= await getLimit(ctx, "ads_monthly")) throw new BudgetError("Batas belanja bulanan sudah tercapai. Naikkan di Pengaturan.");
+  let raisedBudget: number | null = null;
   if (camp.status !== "live") {
     const [cap, live] = [await getLimit(ctx, "ads_daily"), await liveDailyTotal(ctx)];
     if (!fitsDailyCap(live, camp.dailyBudgetIdr, cap)) throw new BudgetError("Batas belanja harian tidak cukup untuk kampanye ini. Naikkan di Pengaturan atau hentikan kampanye lain.");
+  } else if (TEST_GOALS.some((t) => t.goal === camp.goal)) {
+    // Each angle keeps its share when another joins a running test.
+    const running = await db.select({ id: creatives.id }).from(creatives).where(and(eq(creatives.campaignId, camp.id), eq(creatives.status, "live")));
+    const need = (running.length + 1) * PER_ANGLE_GOAL_IDR;
+    if (need > camp.dailyBudgetIdr) {
+      const [cap, live] = [await getLimit(ctx, "ads_daily"), await liveDailyTotal(ctx)];
+      if (!fitsDailyCap(live, need - camp.dailyBudgetIdr, cap)) throw new BudgetError("Batas belanja harian tidak cukup untuk menambah sudut pandang ini. Naikkan di Pengaturan atau hentikan sudut pandang lain.");
+      raisedBudget = need;
+    }
   }
   const platform = adsPlatform();
   const [p] = await db.select().from(products).where(eq(products.id, camp.productId));
@@ -135,7 +279,8 @@ export async function approveCreative(ctx: Ctx, creativeId: string) {
     assetFile: path.join(ASSET_DIR, c.posterPath ?? ""), format: c.format, landingUrl: p.sourceUrl ? withRef(p.sourceUrl, c.refCode) : null,
   });
   await db.update(creatives).set({ status: "live", externalId: r.adExternalId }).where(eq(creatives.id, c.id));
-  await db.update(campaigns).set({ status: "live", externalId: r.campaignExternalId, externalAdSetId: r.adSetExternalId }).where(eq(campaigns.id, camp.id));
+  if (raisedBudget !== null && !platform.simulated) await platform.setBudget(r.adSetExternalId, raisedBudget);
+  await db.update(campaigns).set({ status: "live", externalId: r.campaignExternalId, externalAdSetId: r.adSetExternalId, ...(raisedBudget !== null ? { dailyBudgetIdr: raisedBudget } : {}) }).where(eq(campaigns.id, camp.id));
   await db.update(campaignPlans).set({ status: "approved" }).where(eq(campaignPlans.id, camp.planId));
   await logActivity(ctx, ctx.actor, `Menyetujui iklan "${c.hook}"`, r.activated ? `Tayang di ${camp.name}` : `Dibuat dalam kondisi dijeda di Meta`, "/ads");
 }
@@ -243,6 +388,7 @@ export async function monitorAds(ctx: Ctx, at = new Date(), platform: AdsPlatfor
     }
     decisions.push({ hook: c.hook, action: d.action });
   }
+  await reviewAngles(ctx, at);
   return decisions;
 }
 

@@ -91,6 +91,8 @@ export const goalTemplates = pgTable("goal_templates", {
   rules: jsonb("rules").$type<GoalRules>().notNull(),
 }, (t) => [uniqueIndex("goal_ws_key").on(t.workspaceId, t.key)]).enableRLS();
 
+export type AngleType = "problem" | "desire" | "moment" | "proof" | "objection" | "value" | "identity";
+
 export const angles = pgTable("angles", {
   id: id(), workspaceId: ws(),
   productId: text("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
@@ -99,6 +101,11 @@ export const angles = pgTable("angles", {
   pain: text("pain").notNull(),
   promise: text("promise").notNull(),
   proof: text("proof").notNull().default(""),
+  type: text("type").$type<AngleType>().notNull().default("problem"),
+  hook: text("hook").notNull().default(""),
+  status: text("status").$type<"idea" | "testing" | "winning" | "stopped">().notNull().default("idea"),
+  source: text("source").$type<"agent" | "manual">().notNull().default("agent"),
+  stopReason: text("stop_reason"),
   createdAt: createdAt(),
 }).enableRLS();
 

@@ -15,7 +15,7 @@ import { runCloser } from "@/lib/ai/closer";
 import { can, getCtx } from "@/lib/ctx";
 import { dayKey } from "@/lib/format";
 import { importCsv, setOrderStatus } from "@/lib/orders/service";
-import { approveCreative, generatePlan, monitorAds, rejectCreative, resumeCreative, simulateDay, syncFromMeta } from "@/lib/pipeline";
+import { addManualAngle, draftMoreAngles, restoreAngle, stopAngle, testAngle, approveCreative, generatePlan, monitorAds, rejectCreative, resumeCreative, simulateDay, syncFromMeta } from "@/lib/pipeline";
 import { adsPlatform, realId } from "@/lib/ads/platform";
 import { logActivity } from "@/lib/log";
 import { creatives, campaigns } from "@/db/schema";
@@ -51,6 +51,19 @@ export async function pauseAd(id: string) {
     const others = await ctx.db.select({ id: creatives.id }).from(creatives).where(and(eq(creatives.campaignId, row.campaignId), eq(creatives.status, "live")));
     if (!others.length) await ctx.db.update(campaigns).set({ status: "paused" }).where(eq(campaigns.id, row.campaignId));
     await logActivity(ctx, ctx.actor, `Menjeda iklan "${row.hook}"`, "", "/ads");
+  });
+}
+export async function draftIdeas(productId: string) {
+  await guard(async () => { const r = await draftMoreAngles(await needRole("approve"), productId); await flash(r.added ? `${r.added} ide baru ditambahkan` : "Belum ada ide baru. Tambahkan sendiri, atau hubungkan Claude untuk ide baru."); });
+}
+export async function testIdea(id: string) { await guard(async () => { await testAngle(await needRole("approve"), id); }); }
+export async function stopIdea(id: string) { await guard(async () => { const ctx = await needRole("approve"); await stopAngle(ctx, id, `Dihentikan oleh ${ctx.actor}`); }); }
+export async function restoreIdea(id: string) { await guard(async () => { await restoreAngle(await needRole("approve"), id); }); }
+export async function addAngle(productId: string, f: FormData) {
+  const title = str(f, "title"); if (!title) return;
+  await guard(async () => {
+    const dup = await addManualAngle(await needRole("approve"), productId, { title, audience: str(f, "audience"), pain: str(f, "pain"), promise: str(f, "promise"), proof: str(f, "proof"), hook: str(f, "hook") || title });
+    if (dup) await flash(`Tersimpan, tapi mirip dengan "${dup}"`);
   });
 }
 export async function createPlan(productId: string) { await guard(async () => { await generatePlan(await needRole("approve"), productId); }); }
