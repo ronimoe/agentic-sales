@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { createLocalDb } from "@/db/client";
-import { campaigns, conversations, creatives, orders, products } from "@/db/schema";
+import { adMetrics, budgetLimits, campaigns, contacts, conversations, creatives, orders, products, workspaces } from "@/db/schema";
 import { setupWorkspace } from "./seed";
-import { approveCreative, generatePlan, rejectCreative } from "./pipeline";
+import { approveCreative, generatePlan, rejectCreative, syncFromMeta } from "./pipeline";
 import { receiveInbound, sendToCustomer } from "./whatsapp/service";
 import { CLOSER_TOOL_NAMES, runCloser } from "./ai/closer";
 import { importCsv, setOrderStatus } from "./orders/service";
@@ -72,6 +72,52 @@ describe("sale traced to its angle", () => {
     const rows = await db.select().from(orders).where(eq(orders.workspaceId, a.workspaceId));
     expect(rows).toHaveLength(1);
     expect(profitOf(rows[0])).toBe(61000);
+  });
+
+  it("matches long marketplace titles, and unmatched orders add no profit", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    await db.insert(products).values({ workspaceId: a.workspaceId, name: "Serum Glow", priceIdr: 99000, costIdr: 30000, stock: 5 });
+    await importCsv(a, "tokopedia", 'order_id,product,amount,status\nT1,Serum Glow Original BPOM 30ml,99000,selesai\nT2,Barang Lain,50000,selesai');
+    const rows = await db.select().from(orders).where(eq(orders.workspaceId, a.workspaceId));
+    expect(profitOf(rows.find((r) => r.externalId === "T1")!)).toBe(69000);
+    expect(profitOf(rows.find((r) => r.externalId === "T2")!)).toBe(0);
+  });
+
+  it("doesn't treat a casual ya as marketing consent", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Serum", priceIdr: 99000, costIdr: 30000, stock: 5 }).returning();
+    const say = async (text: string) => { const r = await receiveInbound(a, { phone: "62822", name: "Rina", text, simulated: true }); await runCloser(a, r!.conversationId); };
+    await say("Harganya berapa ya kak?");
+    expect((await db.select().from(contacts).where(eq(contacts.phone, "62822")))[0].optInAt).toBeNull();
+    await db.update(conversations).set({ productId: p.id }).where(eq(conversations.workspaceId, a.workspaceId));
+    await say("Saya pesan COD");
+    await say("Ya boleh");
+    expect((await db.select().from(contacts).where(eq(contacts.phone, "62822")))[0].optInAt).not.toBeNull();
+  });
+
+  it("syncs real results, then pauses on them, and stops paid WhatsApp at the cap", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Serum", priceIdr: 99000, costIdr: 30000, stock: 5, visual: { shape: "bottle", color: "#E85D9A" } }).returning();
+    await generatePlan(a, p.id);
+    const [row] = await db.select({ c: creatives }).from(creatives).innerJoin(campaigns, eq(creatives.campaignId, campaigns.id)).where(eq(campaigns.goal, "cold_sell"));
+    await approveCreative(a, row.c.id);
+    await db.update(creatives).set({ externalId: "9001" }).where(eq(creatives.id, row.c.id));
+    const fake = { simulated: false, launch: async () => { throw new Error("no"); }, setBudget: async () => {}, paused: [] as string[], async pause(id: string) { this.paused.push(id); },
+      insights: async () => [{ day: "2026-11-01", spendIdr: 900000, impressions: 50000, reach: 40000, clicks: 300, videoWatches: 0, frequency: 1.2 }] };
+    expect(await syncFromMeta(a, fake)).toBe(1);
+    expect(await syncFromMeta(a, fake)).toBe(1);
+    expect(fake.paused).toEqual(["9001"]);
+    const m = await db.select().from(adMetrics).where(eq(adMetrics.creativeId, row.c.id));
+    expect(m).toHaveLength(1);
+    expect(m[0].simulated).toBe(false);
+
+    await db.update(budgetLimits).set({ amountIdr: 0 }).where(and(eq(budgetLimits.workspaceId, a.workspaceId), eq(budgetLimits.kind, "whatsapp_monthly")));
+    await db.update(workspaces).set({ settings: { whatsappCost: { marketingIdr: 667, utilityIdr: 300, serviceIdr: 357, freeServicePerMonth: 0 }, quietHours: { startHour: 21, endHour: 8 }, aiLabelAds: false } }).where(eq(workspaces.id, a.workspaceId));
+    const r = await receiveInbound(a, { phone: "62833", name: "", text: "halo", simulated: true });
+    expect((await sendToCustomer(a, r!.conversationId, "halo", "human")).sent).toBe(false);
   });
 
   it("gives the closer no ad, budget, or rule tools", () => {

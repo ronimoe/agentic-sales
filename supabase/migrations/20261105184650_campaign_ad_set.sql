@@ -1,0 +1,1 @@
+ALTER TABLE "campaigns" ADD COLUMN "external_ad_set_id" text;

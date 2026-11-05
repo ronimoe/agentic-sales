@@ -70,14 +70,14 @@ function closerTools(a: ReturnType<typeof closerActions>) {
 const has = (t: string, ...w: string[]) => w.some((x) => new RegExp(`\\b${x}\\b`, "i").test(t));
 
 /** Scripted stand-in used only while no Claude key is set. */
-export async function demoReply(text: string, a: ReturnType<typeof closerActions>, customerName: string): Promise<string | null> {
+export async function demoReply(text: string, a: ReturnType<typeof closerActions>, customerName: string, askedOptIn = false): Promise<string | null> {
   const [p] = await a.lookupProduct();
   if (!p) return "Halo Kak, mau tanya produk yang mana?";
   if (has(text, "admin", "orang", "komplain", "kecewa", "marah", "refund", "penipu")) {
     await a.handoff(`Pelanggan menulis: "${text.slice(0, 80)}"`);
     return "Baik Kak, saya sambungkan ke tim kami ya. Mohon tunggu sebentar.";
   }
-  if (has(text, "ya", "boleh", "setuju") && !has(text, "cod", "transfer")) {
+  if (askedOptIn && has(text, "ya", "boleh", "setuju") && !has(text, "cod", "transfer")) {
     await a.recordOptIn();
     return "Siap Kak, terima kasih. Kami kabari kalau ada promo. Balas STOP kapan saja untuk berhenti.";
   }
@@ -120,7 +120,8 @@ export async function runCloser(ctx: Ctx, conversationId: string) {
   try {
     let reply: string | null;
     if (!aiEnabled()) {
-      reply = await demoReply(last.body, actions, row.name);
+      const prevAi = [...history].reverse().find((m) => m.sender === "ai");
+      reply = await demoReply(last.body, actions, row.name, !!prevAi?.body.includes("Balas YA"));
     } else {
       await assertRoom(ctx, "ai", 500);
       const rb = await activeRules(ctx, "whatsapp");

@@ -1,4 +1,4 @@
-import { and, eq, ilike, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { creatives, orders, products, type OrderChannel, type OrderStatus } from "@/db/schema";
 import { logActivity } from "@/lib/log";
 import type { Ctx } from "@/lib/types";
@@ -25,7 +25,11 @@ export async function setOrderStatus(ctx: Ctx, id: string, status: OrderStatus) 
 
 export async function upsertExternalOrder(ctx: Ctx, channel: OrderChannel, o: { externalId: string; product: string; quantity: number; amountIdr: number; feesIdr?: number; status: OrderStatus; refCode: string | null; customer: string }, attribution: "confirmed" | "partial" | "estimated") {
   const { db, workspaceId } = ctx;
-  const [p] = o.product ? await db.select().from(products).where(and(eq(products.workspaceId, workspaceId), ilike(products.name, `%${o.product.replace(/[%_]/g, "")}%`))) : [];
+  const needle = o.product.trim().toLowerCase();
+  const all = needle ? await db.select().from(products).where(eq(products.workspaceId, workspaceId)) : [];
+  // Marketplace titles often run longer than ours, so match in both directions. Ambiguous titles stay unmatched.
+  const hits = all.filter((x) => { const n = x.name.toLowerCase(); return needle.includes(n) || n.includes(needle); });
+  const p = hits.length === 1 ? hits[0] : undefined;
   const [ad] = o.refCode ? await db.select({ id: creatives.id }).from(creatives).where(and(eq(creatives.workspaceId, workspaceId), eq(creatives.refCode, o.refCode))) : [];
   await db.insert(orders).values({
     workspaceId, channel, externalId: o.externalId, productId: p?.id, creativeId: ad?.id, customerName: o.customer, quantity: o.quantity, amountIdr: o.amountIdr,

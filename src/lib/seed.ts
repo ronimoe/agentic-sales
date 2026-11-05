@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { budgetLimits, campaigns, creatives, goalTemplates, members, products, rulebooks, workspaces, type GoalKey, type GoalRules, type WorkspaceSettings } from "@/db/schema";
 import { getDb } from "@/db/client";
+import { adapterStatus } from "./adapters";
 import { approveCreative, generatePlan, simulateDay } from "./pipeline";
 import { receiveInbound } from "./whatsapp/service";
 import { runCloser } from "./ai/closer";
@@ -43,6 +44,9 @@ export function ensureSeeded() {
     const db = await getDb();
     if ((await db.select({ id: workspaces.id }).from(workspaces).limit(1)).length) return;
     const ctx = await setupWorkspace(db, "Rumah Laris", "Pemilik");
+    // Sample data is only for full simulation. It must never trigger real ads, messages, or AI calls.
+    const a = adapterStatus();
+    if (a.ai || a.ads || a.whatsapp || a.database) return;
     const [serum, blender, shoe] = await db.insert(products).values([
       { workspaceId: ctx.workspaceId, name: "Serum Niacinamide Glow", category: "cosmetic" as const, description: "Serum wajah ringan untuk dipakai setiap malam.", priceIdr: 99000, costIdr: 32000, stock: 240, bpomNumber: "NA18230100000", halalStatus: "Bersertifikat", approvedClaims: ["Membantu kulit tampak lebih cerah", "Melembapkan kulit"], proof: ["4,8 dari 1.200 ulasan pembeli"], visual: { shape: "bottle" as const, color: "#E85D9A" } },
       { workspaceId: ctx.workspaceId, name: "Blender Portabel Mini", category: "general" as const, description: "Blender isi daya USB yang muat di tas.", priceIdr: 189000, costIdr: 96000, stock: 85, approvedClaims: [], proof: ["Terjual lebih dari 3.000 unit"], visual: { shape: "blender" as const, color: "#1FA971" } },

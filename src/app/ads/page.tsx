@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { campaigns, creatives, products } from "@/db/schema";
-import { pauseAd, resume, simulate } from "@/app/actions";
+import { pauseAd, resume, simulate, syncMeta } from "@/app/actions";
 import { adsPlatform } from "@/lib/ads/platform";
 import { can, getCtx } from "@/lib/ctx";
 import { idr, num, pct } from "@/lib/format";
@@ -17,6 +17,7 @@ export default async function Ads() {
     <div>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><h1 className="h1">{t.ads.title}</h1>
         {sim && <form action={simulate}><button className="btn" title={t.ads.simHint}><span className="chip chip-wait">{t.sim}</span>{t.ads.simDay}</button></form>}
+        {!sim && <form action={syncMeta}><button className="btn btn-main">{t.ads.sync}</button></form>}
       </div>
       {!rows.length && <div className="py-6"><h2 className="h2">{t.ads.empty}</h2><p>{t.ads.emptyBody}</p></div>}
       <ul>{rows.map(({ c, camp, product }) => { const s = score.get(c.id)!; return (

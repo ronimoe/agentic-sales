@@ -1,5 +1,6 @@
 import { and, asc, eq, gte, sql } from "drizzle-orm";
 import { contacts, conversations, creatives, campaigns, messages, workspaces } from "@/db/schema";
+import { assertRoom } from "@/lib/budget";
 import { logActivity, logUsage } from "@/lib/log";
 import type { Ctx } from "@/lib/types";
 import { evaluateSend, isOptOut, REF_RE, type SendRequest } from "./policy";
@@ -64,6 +65,13 @@ export async function sendToCustomer(ctx: Ctx, conversationId: string, body: str
   if (!decision.allowed) {
     await systemNote(ctx, conversationId, `Pesan tidak dikirim: ${decision.reason}`);
     return { sent: false as const, reason: decision.reason };
+  }
+  if (decision.costIdr) {
+    try { await assertRoom(ctx, "whatsapp", decision.costIdr); } catch (e) {
+      const reason = e instanceof Error ? e.message : "Batas WhatsApp tercapai";
+      await systemNote(ctx, conversationId, `Pesan tidak dikirim: ${reason}`);
+      return { sent: false as const, reason };
+    }
   }
   let externalId: string | null = null;
   if (!row.conv.simulated) externalId = await sendViaEvolution(row.contact.phone, body);

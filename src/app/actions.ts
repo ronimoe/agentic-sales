@@ -8,8 +8,8 @@ import { runCloser } from "@/lib/ai/closer";
 import { can, getCtx } from "@/lib/ctx";
 import { dayKey } from "@/lib/format";
 import { importCsv, setOrderStatus } from "@/lib/orders/service";
-import { approveCreative, generatePlan, monitorAds, rejectCreative, resumeCreative, simulateDay } from "@/lib/pipeline";
-import { adsPlatform } from "@/lib/ads/platform";
+import { approveCreative, generatePlan, monitorAds, rejectCreative, resumeCreative, simulateDay, syncFromMeta } from "@/lib/pipeline";
+import { adsPlatform, realId } from "@/lib/ads/platform";
 import { logActivity } from "@/lib/log";
 import { creatives, campaigns } from "@/db/schema";
 import { receiveInbound, sendToCustomer } from "@/lib/whatsapp/service";
@@ -38,7 +38,8 @@ export async function pauseAd(id: string) {
     const ctx = await needRole("approve");
     const [row] = await ctx.db.select().from(creatives).where(and(eq(creatives.id, id), eq(creatives.workspaceId, ctx.workspaceId)));
     if (!row) return;
-    if (row.externalId) await adsPlatform().pause(row.externalId);
+    const adId = realId(row.externalId);
+    if (adId && !adsPlatform().simulated) await adsPlatform().pause(adId);
     await ctx.db.update(creatives).set({ status: "paused", pauseReason: `Dijeda oleh ${ctx.actor}` }).where(eq(creatives.id, id));
     const others = await ctx.db.select({ id: creatives.id }).from(creatives).where(and(eq(creatives.campaignId, row.campaignId), eq(creatives.status, "live")));
     if (!others.length) await ctx.db.update(campaigns).set({ status: "paused" }).where(eq(campaigns.id, row.campaignId));
@@ -71,6 +72,7 @@ export async function simulate() {
     await flash(`Hari ${dayKey(next)} disimulasikan`);
   });
 }
+export async function syncMeta() { await guard(async () => { await flash(`${await syncFromMeta(await getCtx())} baris hasil diambil dari Meta`); }); }
 export async function runMonitor() { await guard(async () => { await monitorAds(await getCtx()); }); }
 
 export async function customerSays(f: FormData) {

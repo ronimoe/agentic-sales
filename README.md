@@ -28,13 +28,19 @@ Copy `.env.example` to `.env.local` and fill in what you have. Never paste keys 
 
 ## Database
 
-A temporary PGlite database lives in `.data/`. Delete that folder to reset the sample data. For remote Supabase, set `DATABASE_URL` and apply migrations with the pinned CLI:
+A temporary PGlite database lives in `.data/`. Delete that folder to reset the sample data, and delete it before connecting Meta, Claude, or WhatsApp so simulated data doesn't mix with real results. Sample data is only created when nothing is connected.
+
+For remote Supabase, set `DATABASE_URL` and apply migrations with the pinned CLI:
 
 ```bash
-npx supabase db push
+pnpm exec supabase db push --db-url "$DATABASE_URL"
 ```
 
 Every table has row level security on with no policies, so it isn't reachable through Supabase's public API.
+
+## Before deploying to Vercel
+
+This prototype isn't ready to deploy yet. Generated assets are stored on local disk, video rendering needs ffmpeg, and login is a password gate with cookie-based workspace switching. Move assets to Supabase Storage, render video on a worker, and add Supabase Auth first.
 
 ## How the code is arranged
 

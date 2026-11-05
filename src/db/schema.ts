@@ -92,6 +92,7 @@ export const campaigns = pgTable("campaigns", {
   dailyBudgetIdr: idr("daily_budget_idr"),
   status: text("status").$type<"draft" | "live" | "paused">().notNull().default("draft"),
   externalId: text("external_id"),
+  externalAdSetId: text("external_ad_set_id"),
   createdAt: createdAt(),
 }).enableRLS();
 

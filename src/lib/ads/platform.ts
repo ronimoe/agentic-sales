@@ -1,22 +1,31 @@
 export type LaunchInput = {
-  campaignName: string; goal: string; destination: string; dailyBudgetIdr: number; existingCampaignId: string | null;
+  campaignName: string; goal: string; destination: string; dailyBudgetIdr: number; existingCampaignId: string | null; existingAdSetId: string | null;
   headline: string; primaryText: string; cta: string; whatsappOpener: string | null; refCode: string; assetFile: string; format: "image" | "video"; landingUrl: string | null;
 };
-export type LaunchResult = { campaignExternalId: string; adExternalId: string; activated: boolean };
+export type LaunchResult = { campaignExternalId: string; adSetExternalId: string; adExternalId: string; activated: boolean };
+
+/** Sample data carries sim_ ids that must never reach a real API. */
+export const realId = (id: string | null | undefined) => (id && !id.startsWith("sim_") ? id : null);
+
+export function withRef(url: string, ref: string) {
+  const u = new URL(url);
+  u.searchParams.set("ref", ref);
+  return u.toString();
+}
 export type AdInsight = { day: string; spendIdr: number; impressions: number; reach: number; clicks: number; videoWatches: number; frequency: number };
 
 export interface AdsPlatform {
   simulated: boolean;
   launch(i: LaunchInput): Promise<LaunchResult>;
   pause(adExternalId: string): Promise<void>;
-  setBudget(externalAdSetOrCampaignId: string, dailyBudgetIdr: number): Promise<void>;
+  setBudget(adSetId: string, dailyBudgetIdr: number): Promise<void>;
   insights(adExternalId: string, sinceDay: string): Promise<AdInsight[]>;
 }
 
 const simulated: AdsPlatform = {
   simulated: true,
   async launch(i) {
-    return { campaignExternalId: i.existingCampaignId ?? `sim_c_${crypto.randomUUID().slice(0, 8)}`, adExternalId: `sim_a_${crypto.randomUUID().slice(0, 8)}`, activated: true };
+    return { campaignExternalId: i.existingCampaignId ?? `sim_c_${crypto.randomUUID().slice(0, 8)}`, adSetExternalId: i.existingAdSetId ?? `sim_s_${crypto.randomUUID().slice(0, 8)}`, adExternalId: `sim_a_${crypto.randomUUID().slice(0, 8)}`, activated: true };
   },
   async pause() {},
   async setBudget() {},
@@ -50,18 +59,20 @@ export function metaPlatform(env = process.env, fetcher: typeof fetch = fetch): 
     simulated: false,
     async launch(i) {
       const map = OBJECTIVE[i.goal] ?? OBJECTIVE.cold_sell;
-      const campaignId = i.existingCampaignId ?? (await call(`${account}/campaigns`, { name: i.campaignName, objective: map.objective, status, special_ad_categories: [] })).id!;
+      const campaignId = realId(i.existingCampaignId) ?? (await call(`${account}/campaigns`, { name: i.campaignName, objective: map.objective, status, special_ad_categories: [] })).id!;
       const whatsapp = i.destination === "whatsapp";
-      const adset = await call(`${account}/adsets`, {
-        name: `${i.campaignName} ${i.refCode}`, campaign_id: campaignId, status, daily_budget: i.dailyBudgetIdr, billing_event: "IMPRESSIONS",
+      // One ad set per campaign, so the campaign's daily budget is never multiplied by its ad count.
+      const adSetId = realId(i.existingAdSetId) ?? (await call(`${account}/adsets`, {
+        name: i.campaignName, campaign_id: campaignId, status, daily_budget: i.dailyBudgetIdr, billing_event: "IMPRESSIONS",
         optimization_goal: map.optimization, bid_strategy: "LOWEST_COST_WITHOUT_CAP", targeting: { geo_locations: { countries: ["ID"] } },
         ...(whatsapp ? { destination_type: "WHATSAPP", promoted_object: { page_id: env.META_PAGE_ID, whatsapp_phone_number: env.META_WHATSAPP_NUMBER } } : {}),
-      });
+      })).id!;
       const fs = await import("node:fs");
       const bytes = fs.readFileSync(i.assetFile).toString("base64");
       const image = await call(`${account}/adimages`, { bytes });
       const hash = Object.values(image.images ?? {})[0]?.hash;
-      const link = whatsapp ? "https://api.whatsapp.com/send" : i.landingUrl ?? "https://example.com";
+      if (!whatsapp && !i.landingUrl) throw new Error("Iklan ini butuh link tujuan");
+      const link = whatsapp ? "https://api.whatsapp.com/send" : i.landingUrl!;
       const creative = await call(`${account}/adcreatives`, {
         name: i.refCode,
         object_story_spec: {
@@ -72,8 +83,8 @@ export function metaPlatform(env = process.env, fetcher: typeof fetch = fetch): 
           },
         },
       });
-      const ad = await call(`${account}/ads`, { name: i.refCode, adset_id: adset.id, creative: { creative_id: creative.id }, status });
-      return { campaignExternalId: campaignId, adExternalId: ad.id!, activated: allow };
+      const ad = await call(`${account}/ads`, { name: i.refCode, adset_id: adSetId, creative: { creative_id: creative.id }, status });
+      return { campaignExternalId: campaignId, adSetExternalId: adSetId, adExternalId: ad.id!, activated: allow };
     },
     async pause(id) { await call(id, { status: "PAUSED" }); },
     async setBudget(id, amount) { await call(id, { daily_budget: amount }); },

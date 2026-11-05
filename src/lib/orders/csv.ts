@@ -57,5 +57,6 @@ export function parseOrdersCsv(csv: string): { rows: CsvRow[]; errors: string[] 
   return { rows, errors };
 }
 
-export const profitOf = (o: { status: OrderStatus; amountIdr: number; costIdr: number; feesIdr: number }) =>
-  o.status === "delivered" ? o.amountIdr - o.costIdr - o.feesIdr : 0;
+/** Orders with no matched product have unknown cost, so they count as no profit instead of inflating it. */
+export const profitOf = (o: { status: OrderStatus; amountIdr: number; costIdr: number; feesIdr: number; productId?: string | null }) =>
+  o.status === "delivered" && o.productId !== null ? o.amountIdr - o.costIdr - o.feesIdr : 0;
