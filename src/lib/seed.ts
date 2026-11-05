@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { budgetLimits, campaigns, creatives, goalTemplates, knowledge, members, products, rulebooks, variants, workspaces, type GoalKey, type GoalRules, type KnowledgeTopic, type Rule, type WorkspaceSettings } from "@/db/schema";
 import { getDb } from "@/db/client";
 import { adapterStatus } from "./adapters";
+import { JAVA } from "./orders/shipping";
 import { approveCreative, generatePlan, simulateDay } from "./pipeline";
 import { receiveInbound } from "./whatsapp/service";
 import { runCloser } from "./ai/closer";
@@ -55,6 +56,7 @@ export function ensureSeeded() {
     // Sample data is only for full simulation. It must never trigger real ads, messages, or AI calls.
     const a = adapterStatus();
     if (a.ai || a.ads || a.whatsapp || a.database) return;
+    await db.update(workspaces).set({ settings: { ...SETTINGS, codAreas: JAVA } }).where(eq(workspaces.id, ctx.workspaceId));
     const [serum, blender, shoe] = await db.insert(products).values([
       { workspaceId: ctx.workspaceId, name: "Serum Niacinamide Glow", category: "cosmetic" as const, description: "Serum wajah ringan untuk dipakai setiap malam.", priceIdr: 99000, costIdr: 32000, stock: 240, bpomNumber: "NA18230100000", halalStatus: "Bersertifikat", approvedClaims: ["Membantu kulit tampak lebih cerah", "Melembapkan kulit"], proof: ["4,8 dari 1.200 ulasan pembeli"], visual: { shape: "bottle" as const, color: "#E85D9A" } },
       { workspaceId: ctx.workspaceId, name: "Blender Portabel Mini", category: "general" as const, description: "Blender isi daya USB yang muat di tas.", priceIdr: 189000, costIdr: 96000, stock: 85, approvedClaims: [], proof: ["Terjual lebih dari 3.000 unit"], visual: { shape: "blender" as const, color: "#1FA971" } },
@@ -63,7 +65,7 @@ export function ensureSeeded() {
 
     const fact = (productId: string | null, topic: KnowledgeTopic, question: string, answer: string, status: "confirmed" | "draft" = "confirmed") => ({ workspaceId: ctx.workspaceId, productId, topic, question, answer, status, source: "sample" as const });
     await db.insert(knowledge).values([
-      fact(null, "cod", "Bisa COD?", "Bisa COD Kak, bayar saat barang sampai. Berlaku untuk Pulau Jawa dan kota besar lainnya."),
+      fact(null, "cod", "Bisa COD?", "Bisa COD Kak, bayar saat barang sampai. Berlaku untuk Pulau Jawa."),
       fact(null, "payment", "Bayarnya bisa lewat apa?", "Bisa COD atau transfer bank."),
       fact(null, "returns", "Bisa retur?", "Barang rusak bisa ditukar dalam 7 hari setelah diterima, dengan video saat membuka paket."),
       fact(serum.id, "how_to", "Cara pakainya bagaimana?", "Oleskan 2 sampai 3 tetes ke wajah bersih setiap malam, lalu pakai pelembap."),
@@ -89,7 +91,7 @@ export function ensureSeeded() {
         if (r?.runCloser) await runCloser(ctx, r.conversationId);
       }
     };
-    await chat("6281200000001", "Dewi", ["Halo kak, mau tanya", "Harganya berapa?", "Takut palsu nih", "Oke saya pesan COD"]);
+    await chat("6281200000001", "Dewi", ["Halo kak, mau tanya", "Harganya berapa?", "Takut palsu nih", "Oke saya pesan COD", "Dewi, Jl. Mawar No. 5 RT 2, Bandung, Jawa Barat"]);
     await chat("6281200000002", "Rudi", ["Berapa harganya kak?"]);
     await chat("6281200000003", "Sinta", ["Halo", "Saya kecewa, barang belum sampai. Mau komplain ke admin"]);
 

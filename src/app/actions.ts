@@ -11,6 +11,7 @@ import { KNOWLEDGE_TOPICS, POLICY_TOPICS } from "@/lib/knowledge/policies";
 import { adapterStatus } from "@/lib/adapters";
 import { fetchPublicText } from "@/lib/safe-fetch";
 import { saveUploadedImage } from "@/lib/assets/upload";
+import { PROVINCES } from "@/lib/orders/shipping";
 import { runCloser } from "@/lib/ai/closer";
 import { can, getCtx } from "@/lib/ctx";
 import { dayKey } from "@/lib/format";
@@ -238,7 +239,7 @@ export async function saveSettings(f: FormData) {
   await guard(async () => {
     const ctx = await needRole("settings");
     const s = ctx.workspace.settings;
-    await ctx.db.update(workspaces).set({ settings: { ...s, aiLabelAds: f.get("aiLabel") === "on",
+    await ctx.db.update(workspaces).set({ settings: { ...s, aiLabelAds: f.get("aiLabel") === "on", codAreas: f.getAll("codAreas").map(String).filter((p) => PROVINCES.includes(p)),
       whatsappCost: { ...s.whatsappCost, marketingIdr: money(str(f, "marketing")), serviceIdr: money(str(f, "service")) },
       quietHours: { startHour: Math.min(23, money(str(f, "quietStart"))), endHour: Math.min(23, money(str(f, "quietEnd"))) } } }).where(eq(workspaces.id, ctx.workspaceId));
   });

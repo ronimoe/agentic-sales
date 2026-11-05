@@ -34,7 +34,7 @@ export default async function Orders({ searchParams }: { searchParams: Promise<{
           <thead><tr className="hint">{[O.product, O.customer, O.amount, O.profit, O.status, O.link, ""].map((h, i) => <th key={i} scope="col" className="pb-2 pr-4 font-medium">{h}</th>)}</tr></thead>
           <tbody>{rows.map(({ o, product }) => <tr key={o.id} className="rowline align-top">
             <td className="py-2.5 pr-4"><span className="font-semibold">{product ?? "-"}</span><span className="hint block">{t.channel[o.channel]}, {dateWib(o.orderedAt, t.locale)}{o.paymentMethod === "cod" ? ", COD" : ""}</span></td>
-            <td className="py-2.5 pr-4">{o.customerName || "-"}</td>
+            <td className="py-2.5 pr-4">{o.customerName || "-"}{o.shippingAddress && <span className="hint block">{o.shippingAddress}, {o.shippingCity}, {o.shippingProvince}</span>}</td>
             <td className="py-2.5 pr-4 tabular">{idr(o.amountIdr)}</td>
             <td className="py-2.5 pr-4 font-bold tabular">{o.status === "delivered" ? idr(profitOf(o)) : "-"}</td>
             <td className="py-2.5 pr-4"><span className={`chip ${chip(o.status)}`}>{t.status[o.status]}</span></td>

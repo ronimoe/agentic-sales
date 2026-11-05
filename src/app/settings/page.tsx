@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { saveBrand, savePolicies, saveBudget, saveSettings, setPref } from "@/app/actions";
 import { knowledge } from "@/db/schema";
 import { POLICY_TOPICS } from "@/lib/knowledge/policies";
+import { PROVINCES } from "@/lib/orders/shipping";
 import { adapterStatus } from "@/lib/adapters";
 import { testableCampaigns } from "@/lib/ads/rules";
 import { getLimit, usedThisMonth } from "@/lib/budget";
@@ -59,6 +60,9 @@ export default async function Settings() {
           <div><label className="lbl" htmlFor="marketing">{S.marketing}</label><input id="marketing" name="marketing" defaultValue={s.whatsappCost.marketingIdr} className="field tabular" /></div>
           <div><label className="lbl" htmlFor="service">{S.service}</label><input id="service" name="service" defaultValue={s.whatsappCost.serviceIdr} className="field tabular" /></div>
           <div className="grid grid-cols-2 gap-2 sm:col-span-2"><div><label className="lbl" htmlFor="quietStart">{S.quiet}</label><input id="quietStart" name="quietStart" defaultValue={s.quietHours.startHour} className="field tabular" /></div><div><label className="lbl" htmlFor="quietEnd">&nbsp;</label><input id="quietEnd" name="quietEnd" defaultValue={s.quietHours.endHour} aria-label={S.quiet} className="field tabular" /></div></div>
+          <fieldset className="sm:col-span-2"><legend className="lbl">{S.codAreas}</legend><p className="hint mb-2">{S.codHint}</p>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3">{PROVINCES.map((p) => <label key={p} className="flex items-center gap-2"><input type="checkbox" name="codAreas" value={p} defaultChecked={s.codAreas?.includes(p)} className="size-4" />{p}</label>)}</div>
+          </fieldset>
           <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" name="aiLabel" defaultChecked={s.aiLabelAds} className="size-5" />{S.aiLabel}</label>
           <div><button className="btn btn-main">{S.saveOther}</button></div>
         </form>

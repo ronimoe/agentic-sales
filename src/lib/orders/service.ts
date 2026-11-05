@@ -1,11 +1,18 @@
 import { and, eq, sql } from "drizzle-orm";
-import { creatives, orders, products, variants, type OrderChannel, type OrderStatus } from "@/db/schema";
+import { creatives, orders, products, variants, workspaces, type OrderChannel, type OrderStatus } from "@/db/schema";
 import { logActivity } from "@/lib/log";
 import type { Ctx } from "@/lib/types";
 import { parseOrdersCsv } from "./csv";
+import { codAllowed, validateShipping, type Shipping } from "./shipping";
 
-export async function createChatOrder(ctx: Ctx, o: { conversationId: string; contactId: string; creativeId: string | null; productId: string; customerName: string; quantity: number; paymentMethod: "cod" | "transfer"; variantName?: string | null }) {
+export async function createChatOrder(ctx: Ctx, o: { conversationId: string; contactId: string; creativeId: string | null; productId: string; customerName: string; quantity: number; paymentMethod: "cod" | "transfer"; variantName?: string | null; shipping: Partial<Shipping> }) {
   const { db, workspaceId } = ctx;
+  const ship = validateShipping({ ...o.shipping, recipient: o.shipping.recipient || o.customerName });
+  if (!ship.ok) return { ok: false as const, reason: ship.reason };
+  if (o.paymentMethod === "cod") {
+    const [w] = await db.select({ settings: workspaces.settings }).from(workspaces).where(eq(workspaces.id, workspaceId));
+    if (!codAllowed(w.settings.codAreas, ship.value.province)) return { ok: false as const, reason: `COD tidak tersedia untuk ${ship.value.province}. Tawarkan transfer.` };
+  }
   const [p] = await db.select().from(products).where(and(eq(products.id, o.productId), eq(products.workspaceId, workspaceId)));
   if (!p) throw new Error("Produk tidak ditemukan");
   const vs = await db.select().from(variants).where(eq(variants.productId, p.id));
@@ -17,12 +24,12 @@ export async function createChatOrder(ctx: Ctx, o: { conversationId: string; con
   } else if (p.stock < o.quantity) return { ok: false as const, reason: `Stok ${p.name} tersisa ${p.stock}` };
   const [order] = await db.insert(orders).values({
     workspaceId, channel: "whatsapp", productId: p.id, variantId: variant?.id, contactId: o.contactId, conversationId: o.conversationId, creativeId: o.creativeId,
-    customerName: o.customerName, quantity: o.quantity, amountIdr: p.priceIdr * o.quantity, costIdr: p.costIdr * o.quantity,
+    customerName: ship.value.recipient, shippingAddress: ship.value.address, shippingCity: ship.value.city, shippingProvince: ship.value.province, quantity: o.quantity, amountIdr: p.priceIdr * o.quantity, costIdr: p.costIdr * o.quantity,
     paymentMethod: o.paymentMethod, attribution: o.creativeId ? "confirmed" : "none",
   }).returning();
   if (variant) await db.update(variants).set({ stock: sql`${variants.stock} - ${o.quantity}` }).where(eq(variants.id, variant.id));
   await db.update(products).set({ stock: sql`greatest(${products.stock} - ${o.quantity}, 0)` }).where(eq(products.id, p.id));
-  await logActivity(ctx, "WhatsApp closer", `Membuat pesanan ${p.name}`, `${o.customerName || "Pelanggan"}, ${o.paymentMethod === "cod" ? "COD" : "transfer"}`, "/orders");
+  await logActivity(ctx, "WhatsApp closer", `Membuat pesanan ${p.name}`, `${ship.value.recipient}, ${ship.value.city}, ${o.paymentMethod === "cod" ? "COD" : "transfer"}`, "/orders");
   return { ok: true as const, order };
 }
 

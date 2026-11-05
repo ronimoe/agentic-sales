@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { createLocalDb } from "@/db/client";
+import { createLocalDb, type Db } from "@/db/client";
+import { JAVA } from "./orders/shipping";
 import { adMetrics, angles, budgetLimits, campaigns, contacts, conversations, creatives, knowledge, messages, objections, orders, products, variants, workspaces } from "@/db/schema";
 import { setupWorkspace } from "./seed";
 import { approveCreative, draftMoreAngles, generatePlan, monitorAds, rejectCreative, syncFromMeta, testAngle } from "./pipeline";
@@ -10,6 +11,12 @@ import { factsFor, runAiReadiness } from "./knowledge/service";
 import { importCsv, setOrderStatus } from "./orders/service";
 import { profitOf } from "./orders/csv";
 import { parseEvolutionEvent } from "./whatsapp/channel";
+
+const ADDRESS = { address: "Jl. Mawar No. 5 RT 2", city: "Bandung", province: "Jawa Barat" };
+const enableCod = async (db: Db, id: string) => {
+  const [w] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+  await db.update(workspaces).set({ settings: { ...w.settings, codAreas: JAVA } }).where(eq(workspaces.id, id));
+};
 
 describe("sale traced to its angle", () => {
   it("runs from product to delivered sale, isolated by workspace", async () => {
@@ -30,8 +37,11 @@ describe("sale traced to its angle", () => {
       if (r?.runCloser) await runCloser(a, r.conversationId);
       return r!.conversationId;
     };
+    await enableCod(db, a.workspaceId);
     const conv = await say("Halo kak", row.c.refCode);
     await say("Saya pesan COD");
+    expect(await db.select().from(orders).where(eq(orders.workspaceId, a.workspaceId))).toHaveLength(0);
+    await say("Dewi, Jl. Mawar No. 5 RT 2, Bandung, Jawa Barat");
 
     const [o] = await db.select().from(orders).where(eq(orders.workspaceId, a.workspaceId));
     expect(o.creativeId).toBe(row.c.id);
@@ -93,7 +103,9 @@ describe("sale traced to its angle", () => {
     await say("Harganya berapa ya kak?");
     expect((await db.select().from(contacts).where(eq(contacts.phone, "62822")))[0].optInAt).toBeNull();
     await db.update(conversations).set({ productId: p.id }).where(eq(conversations.workspaceId, a.workspaceId));
+    await enableCod(db, a.workspaceId);
     await say("Saya pesan COD");
+    await say("Rina, Jl. Melati No. 9 RT 1, Depok, Jawa Barat");
     await say("Ya boleh");
     expect((await db.select().from(contacts).where(eq(contacts.phone, "62822")))[0].optInAt).not.toBeNull();
   });
@@ -155,10 +167,28 @@ describe("sale traced to its angle", () => {
     const r = await receiveInbound(a, { phone: "62855", name: "", text: "halo", simulated: true });
     const act = closerActions(a, r!.conversationId);
     await act.selectProduct(p.id);
-    expect(await act.createOrder(1, "cod", "R", "42")).toContain("tersisa 0");
-    expect(await act.createOrder(1, "cod", "R", null)).toContain("Pilih varian");
-    expect(await act.createOrder(1, "cod", "R", "41")).toContain("Pesanan dibuat");
+    await enableCod(db, a.workspaceId);
+    expect(await act.createOrder(1, "cod", "Rina", "42", ADDRESS)).toContain("tersisa 0");
+    expect(await act.createOrder(1, "cod", "Rina", null, ADDRESS)).toContain("Pilih varian");
+    expect(await act.createOrder(1, "cod", "Rina", "41", ADDRESS)).toContain("Pesanan dibuat");
     expect((await db.select().from(variants).where(eq(variants.name, "41")))[0].stock).toBe(1);
+  });
+
+  it("refuses orders with no address, and COD outside allowed areas", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Serum", priceIdr: 100000, costIdr: 1, stock: 5 }).returning();
+    const r = await receiveInbound(a, { phone: "62877", name: "", text: "halo", simulated: true });
+    const act = closerActions(a, r!.conversationId);
+    await act.selectProduct(p.id);
+    expect(await act.createOrder(1, "cod", "Dewi", null, {})).toContain("Tanyakan dulu");
+    expect(await act.createOrder(1, "cod", "Dewi", null, ADDRESS)).toContain("COD tidak tersedia");
+    await enableCod(db, a.workspaceId);
+    expect(await act.createOrder(1, "cod", "Dewi", null, { ...ADDRESS, city: "Jayapura", province: "Papua" })).toContain("COD tidak tersedia");
+    expect(await act.createOrder(1, "transfer", "Dewi", null, { ...ADDRESS, city: "Jayapura", province: "Papua" })).toContain("Pesanan dibuat");
+    const [o] = await db.select().from(orders).where(eq(orders.workspaceId, a.workspaceId));
+    expect(o).toMatchObject({ shippingCity: "Jayapura", shippingProvince: "Papua", paymentMethod: "transfer" });
+    expect((await db.select().from(products).where(eq(products.id, p.id)))[0].stock).toBe(4);
   });
 
   it("can't pick another business's product", async () => {

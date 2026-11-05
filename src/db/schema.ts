@@ -17,6 +17,7 @@ export type WorkspaceSettings = {
   whatsappCost: { marketingIdr: number; utilityIdr: number; serviceIdr: number; freeServicePerMonth: number };
   quietHours: { startHour: number; endHour: number };
   aiLabelAds: boolean;
+  codAreas?: string[];
   brand?: { logoPath: string | null; primary: string; accent: string };
   voice?: { key: "akrab" | "sopan" | "semangat"; adExample: string; chatExample: string };
 };
@@ -272,6 +273,9 @@ export const orders = pgTable("orders", {
   creativeId: text("creative_id").references(() => creatives.id, { onDelete: "set null" }),
   conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
   customerName: text("customer_name").notNull().default(""),
+  shippingAddress: text("shipping_address"),
+  shippingCity: text("shipping_city"),
+  shippingProvince: text("shipping_province"),
   quantity: integer("quantity").notNull().default(1),
   amountIdr: idr("amount_idr"),
   costIdr: idr("cost_idr"),
