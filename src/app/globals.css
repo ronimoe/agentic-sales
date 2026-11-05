@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --color-nila: #1b2483;
+  --color-nila-soft: #e6e8f8;
+  --color-tinta: #14163a;
+  --color-abu: #5a5d7d;
+  --color-garis: #dcdeef;
+  --color-awan: #f2f3fa;
+  --color-kunyit: #f5b90f;
+  --color-kunyit-soft: #fdf1c7;
+  --color-pandan: #0b7a55;
+  --color-pandan-soft: #d9f1e7;
+  --color-cabai: #d3203a;
+  --color-cabai-soft: #fbe2e6;
+  --font-sans: "Plus Jakarta Sans Variable", system-ui, sans-serif;
+  --font-display: "Bagel Fat One", "Plus Jakarta Sans Variable", sans-serif;
+}
+
+html { background: var(--color-awan); color: var(--color-tinta); }
+body { font-family: var(--font-sans); font-size: 15px; line-height: 1.5; }
+.tabular { font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 3px solid var(--color-kunyit); outline-offset: 2px; border-radius: 4px; }
+
+/* Kawung, a classic batik motif, drawn as the signature of the navigation rail. */
+.kawung {
+  background-color: var(--color-nila);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='.09' stroke-width='1.5'%3E%3Cellipse cx='32' cy='16' rx='11' ry='16'/%3E%3Cellipse cx='32' cy='48' rx='11' ry='16'/%3E%3Cellipse cx='16' cy='32' rx='16' ry='11'/%3E%3Cellipse cx='48' cy='32' rx='16' ry='11'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: 40px; padding: 0 1rem; border-radius: 10px; font-weight: 600; border: 1.5px solid var(--color-garis); background: #fff; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--color-tinta); }
+.btn-main { background: var(--color-nila); color: #fff; border-color: var(--color-nila); }
+.btn-main:hover { background: var(--color-tinta); border-color: var(--color-tinta); }
+.btn-go { background: var(--color-pandan); color: #fff; border-color: var(--color-pandan); }
+.btn-go:hover { background: #075c40; border-color: #075c40; }
+.field { width: 100%; min-height: 42px; padding: .5rem .75rem; border: 1.5px solid var(--color-garis); border-radius: 10px; background: #fff; }
+.field:focus { border-color: var(--color-nila); outline: none; }
+label.lbl { display: block; font-weight: 600; font-size: 14px; margin-bottom: .3rem; }
+.hint { color: var(--color-abu); font-size: 13px; }
+.h1 { font-family: var(--font-display); font-weight: 400; font-size: clamp(30px, 4.6vw, 52px); line-height: 1.08; letter-spacing: -.005em; }
+.h2 { font-weight: 800; font-size: 19px; letter-spacing: -.01em; }
+.rowline { border-top: 1.5px solid var(--color-garis); }
+.chip { display: inline-flex; align-items: center; gap: .3rem; padding: .1rem .55rem; border-radius: 999px; font-size: 12.5px; font-weight: 600; background: var(--color-nila-soft); color: var(--color-nila); white-space: nowrap; }
+.chip-go { background: var(--color-pandan-soft); color: #075c40; }
+.chip-stop { background: var(--color-cabai-soft); color: #9d1228; }
+.chip-wait { background: var(--color-kunyit-soft); color: #6b4f00; }
+.chip-mute { background: #e9eaf3; color: var(--color-abu); }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
