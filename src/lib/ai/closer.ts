@@ -12,7 +12,7 @@ import { activeRules } from "@/lib/pipeline";
 import { assertRoom, BudgetError } from "@/lib/budget";
 import type { Ctx } from "@/lib/types";
 import { historyOf, requestHuman, sendToCustomer } from "@/lib/whatsapp/service";
-import { aiEnabled, claude, FALLBACK_BETA, MODEL } from "./client";
+import { aiEnabled, claude, fallbackParams, model } from "./client";
 
 /** Workspace, customer, and conversation come from server context, never from model arguments. */
 export function closerActions(ctx: Ctx, conversationId: string) {
@@ -195,7 +195,7 @@ export async function runCloser(ctx: Ctx, conversationId: string) {
       }
       while (merged[0]?.role === "assistant") merged.shift();
       const final = await claude().beta.messages.toolRunner({
-        model: MODEL, max_tokens: 4000, max_iterations: 6, betas: [FALLBACK_BETA], fallbacks: "default",
+        model: model(), max_tokens: 4000, max_iterations: 6, ...fallbackParams(model()),
         output_config: { effort: "low" },
         system: [{ type: "text", text: SYSTEM(rb?.rules.filter((r) => r.enabled !== false).map((r) => r.text) ?? [], rb?.tone ?? "", w.settings.voice?.chatExample ?? ""), cache_control: { type: "ephemeral" } }],
         tools: closerTools(actions), messages: merged,

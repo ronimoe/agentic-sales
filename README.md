@@ -19,7 +19,7 @@ pnpm exec vitest run
 
 Copy `.env.example` to `.env.local` and fill in what you have. Never paste keys in chat. Settings shows what's connected.
 
-- **Claude:** `ANTHROPIC_API_KEY` turns on real planning and the closer. Requests use `fallbacks: "default"`, so a declined request retries on a fallback model server-side.
+- **Claude:** `ANTHROPIC_API_KEY` turns on real planning and the closer, using the model in `ANTHROPIC_MODEL`. Supported models use `fallbacks: "default"`, so a declined request retries on a fallback model server-side.
 - **Meta:** ads are always created PAUSED unless `META_ALLOW_ACTIVATE=true`.
 - **WhatsApp:** Evolution API with Baileys is for the prototype only. Use a dedicated test number. Set its webhook to `/api/webhooks/evolution?token=EVOLUTION_WEBHOOK_TOKEN`, and run it on a separate always-on server.
 - **Shopify:** order webhook to `/api/webhooks/shopify`, signed with `SHOPIFY_WEBHOOK_SECRET`.
@@ -28,7 +28,7 @@ Copy `.env.example` to `.env.local` and fill in what you have. Never paste keys 
 
 ## Database
 
-A temporary PGlite database lives in `.data/`. Delete that folder to reset the sample data, and delete it before connecting Meta, Claude, or WhatsApp so simulated data doesn't mix with real results. Sample data is only created when nothing is connected.
+A temporary PGlite database lives in `.data/`. Delete that folder to reset the sample data, and delete it before connecting Meta or WhatsApp so simulated data doesn't mix with real results. Sample data is only created when nothing is connected.
 
 For remote Supabase, set `DATABASE_URL` and apply migrations with the pinned CLI:
 

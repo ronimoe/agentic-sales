@@ -2,8 +2,16 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { z } from "zod";
 
-export const MODEL = "claude-opus-5-5";
-export const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+/** The model comes from ANTHROPIC_MODEL, so it can change without a code edit. */
+export function model() {
+  const m = process.env.ANTHROPIC_MODEL?.trim();
+  if (!m) throw new Error("Isi ANTHROPIC_MODEL di .env.local");
+  return m;
+}
+
+const FALLBACK_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
+/** Declined requests retry on another model server-side. Only some models accept this option. */
+export const fallbackParams = (m: string) => FALLBACK_MODELS.has(m) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" } : {};
 export const aiEnabled = () => !!process.env.ANTHROPIC_API_KEY;
 export const claude = () => new Anthropic();
 
@@ -12,10 +20,9 @@ export class AiRefusal extends Error {}
 /** Structured call used for creative steps. Declined requests fall back server-side, then raise AiRefusal. */
 export async function structured<S extends z.ZodType>(opts: { schema: S; system: string; user: string | unknown[]; effort: "low" | "medium" | "high" }): Promise<z.infer<S>> {
   const res = await claude().beta.messages.parse({
-    model: MODEL,
+    model: model(),
     max_tokens: 16000,
-    betas: [FALLBACK_BETA],
-    fallbacks: "default",
+    ...fallbackParams(model()),
     system: opts.system,
     output_config: { effort: opts.effort, format: betaZodOutputFormat(opts.schema) },
     messages: [{ role: "user", content: opts.user }],
