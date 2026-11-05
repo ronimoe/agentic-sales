@@ -28,12 +28,14 @@ Copy `.env.example` to `.env.local` and fill in what you have. Never paste keys 
 
 ## Database
 
+Real Claude checks cost money and only run on request: `LIVE_CLAUDE=1 pnpm exec vitest run --config vitest.live.config.ts`.
+
 A temporary PGlite database lives in `.data/`. Delete that folder to reset the sample data, and delete it before connecting Meta or WhatsApp so simulated data doesn't mix with real results. Sample data is only created when nothing is connected.
 
-For remote Supabase, set `DATABASE_URL` and apply migrations with the pinned CLI:
+For remote Supabase, set `DATABASE_URL` and `DATABASE_MIGRATION_URL`, then apply migrations with the pinned CLI:
 
 ```bash
-pnpm exec supabase db push --db-url "$DATABASE_URL"
+set -a; source .env.local; set +a; pnpm exec supabase db push --db-url "$DATABASE_MIGRATION_URL"
 ```
 
 Every table has row level security on with no policies, so it isn't reachable through Supabase's public API.
