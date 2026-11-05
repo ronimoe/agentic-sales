@@ -1,5 +1,5 @@
 import { and, asc, eq, gte, sql } from "drizzle-orm";
-import { contacts, conversations, creatives, campaigns, messages, workspaces } from "@/db/schema";
+import { contacts, conversations, creatives, campaigns, knowledge, messages, workspaces } from "@/db/schema";
 import { assertRoom } from "@/lib/budget";
 import { logActivity, logUsage } from "@/lib/log";
 import type { Ctx } from "@/lib/types";
@@ -81,10 +81,22 @@ export async function sendToCustomer(ctx: Ctx, conversationId: string, body: str
   return { sent: true as const };
 }
 
-export async function requestHuman(ctx: Ctx, conversationId: string, reason: string) {
-  await ctx.db.update(conversations).set({ handler: "needs_human", handoffReason: reason }).where(and(eq(conversations.id, conversationId), eq(conversations.workspaceId, ctx.workspaceId)));
+export async function requestHuman(ctx: Ctx, conversationId: string, reason: string, question?: string) {
+  await ctx.db.update(conversations).set({ handler: "needs_human", handoffReason: reason, handoffQuestion: question ?? null }).where(and(eq(conversations.id, conversationId), eq(conversations.workspaceId, ctx.workspaceId)));
   await logActivity(ctx, "WhatsApp closer", "Meminta bantuan orang", reason, `/chats?c=${conversationId}`);
 }
 
 export const historyOf = (ctx: Ctx, conversationId: string) =>
   ctx.db.select().from(messages).where(and(eq(messages.conversationId, conversationId), eq(messages.workspaceId, ctx.workspaceId))).orderBy(asc(messages.createdAt));
+
+/** A person replies. If the AI had asked the team a question, the reply becomes a draft FAQ to review, never a live fact. */
+export async function answerAsHuman(ctx: Ctx, conversationId: string, text: string) {
+  const [conv] = await ctx.db.select().from(conversations).where(and(eq(conversations.id, conversationId), eq(conversations.workspaceId, ctx.workspaceId)));
+  if (!conv) throw new Error("Percakapan tidak ditemukan");
+  const res = await sendToCustomer(ctx, conversationId, text, "human");
+  if (res.sent && conv.handoffQuestion) {
+    await ctx.db.insert(knowledge).values({ workspaceId: ctx.workspaceId, productId: conv.productId, topic: "faq", question: conv.handoffQuestion, answer: text, status: "draft", source: "chat" });
+  }
+  await ctx.db.update(conversations).set({ handler: "human", handoffReason: null, handoffQuestion: null }).where(eq(conversations.id, conversationId));
+  return res;
+}

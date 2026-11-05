@@ -1,4 +1,7 @@
-import { saveBudget, saveSettings, setPref } from "@/app/actions";
+import { and, eq, isNull } from "drizzle-orm";
+import { savePolicies, saveBudget, saveSettings, setPref } from "@/app/actions";
+import { knowledge } from "@/db/schema";
+import { POLICY_TOPICS } from "@/lib/knowledge/policies";
 import { adapterStatus } from "@/lib/adapters";
 import { testableCampaigns } from "@/lib/ads/rules";
 import { getLimit, usedThisMonth } from "@/lib/budget";
@@ -18,6 +21,7 @@ export default async function Settings() {
     { k: "whatsapp_monthly", l: S.whatsapp, v: await getLimit(ctx, "whatsapp_monthly"), u: await usedThisMonth(ctx, "whatsapp") },
   ];
   const conn = [[S.connAi, a.ai], [S.connAds, a.ads], [S.connWa, a.whatsapp], [S.connShop, a.shopify], [S.connWeb, a.website]] as const;
+  const policies = await ctx.db.select().from(knowledge).where(and(eq(knowledge.workspaceId, ctx.workspaceId), isNull(knowledge.productId)));
   return (
     <div className="space-y-10">
       <h1 className="h1">{S.title}</h1>
@@ -25,6 +29,12 @@ export default async function Settings() {
         <form action={saveBudget} className="grid gap-4 sm:grid-cols-2">
           {fields.map((f) => <div key={f.k}><label className="lbl" htmlFor={f.k}>{f.l}</label><input id={f.k} name={f.k} defaultValue={f.v} inputMode="numeric" className="field tabular" /><p className="hint mt-1 tabular">{f.u !== null ? `${idr(f.u)} ${S.used}` : idr(f.v)}</p></div>)}
           <div className="sm:col-span-2"><p className="mb-3 rounded-xl bg-nila-soft px-4 py-2">{S.canTest(testableCampaigns(daily, 100000))}</p><button className="btn btn-main">{S.save}</button></div>
+        </form>
+      </section>
+      <section className="max-w-3xl"><h2 className="h2">{S.policies}</h2><p className="hint mb-3">{S.policiesHint}</p>
+        <form action={savePolicies} className="space-y-3">
+          {POLICY_TOPICS.map(([topic, q]) => <div key={topic}><label className="lbl" htmlFor={`pol-${topic}`}>{q}</label><textarea id={`pol-${topic}`} name={topic} rows={2} defaultValue={policies.find((x) => x.topic === topic)?.answer} className="field" /></div>)}
+          <button className="btn btn-main">{S.savePolicies}</button>
         </form>
       </section>
       <section className="max-w-3xl"><h2 className="h2">{S.conn}</h2><p className="hint mb-2">{S.connHint}</p>

@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 import { and, desc, eq } from "drizzle-orm";
 import { angles, campaignPlans, campaigns, creatives, products } from "@/db/schema";
+import Link from "next/link";
 import { createPlan } from "@/app/actions";
+import { KnowledgePanel } from "@/components/knowledge-panel";
 import { getCtx } from "@/lib/ctx";
 import { idr, num, pct } from "@/lib/format";
 import { getT } from "@/lib/i18n";
@@ -24,7 +26,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
       <p className="hint tabular">{idr(p.priceIdr)}, {P.margin.toLowerCase()} {pct(p.priceIdr ? (p.priceIdr - p.costIdr) / p.priceIdr : 0)}, {P.stock.toLowerCase()} {p.stock}</p>
       <div className="mt-1 flex flex-wrap items-start justify-between gap-4">
         <h1 className="h1 max-w-3xl">{p.name}</h1>
-        <form action={createPlan.bind(null, p.id)}><button className="btn btn-main">{P.plan}</button></form>
+        <div className="flex flex-wrap gap-2"><Link href={`/products/${p.id}/edit`} className="btn">{P.edit}</Link><form action={createPlan.bind(null, p.id)}><button className="btn btn-main">{P.plan}</button></form></div>
       </div>
       {plan && <p className="mt-3 max-w-3xl"><span className="font-semibold">{P.why}: </span>{plan.rationale}</p>}
 
@@ -49,7 +51,9 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
         })}
       </ul>
 
-      <div className="mt-8 grid gap-8 md:grid-cols-[1.3fr_1fr]">
+      <KnowledgePanel ctx={ctx} p={p} t={P} />
+
+      <div className="mt-10 grid gap-8 md:grid-cols-[1.3fr_1fr]">
         <section><h2 className="h2 mb-2">{P.angles}</h2>
           <ul>{ang.map((a) => { const r = results.find((x) => x.id === a.id); return (
             <li key={a.id} className="rowline flex justify-between gap-4 py-2.5"><div><p className="font-semibold">{a.title}</p><p className="hint">{a.audience}. {a.pain}.</p></div>{r && <p className="shrink-0 text-right font-bold tabular">{idr(r.profit)}<span className="hint block font-normal">{r.sales} {P.sold}</span></p>}</li>

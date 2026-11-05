@@ -1,20 +1,27 @@
 import { and, eq, sql } from "drizzle-orm";
-import { creatives, orders, products, type OrderChannel, type OrderStatus } from "@/db/schema";
+import { creatives, orders, products, variants, type OrderChannel, type OrderStatus } from "@/db/schema";
 import { logActivity } from "@/lib/log";
 import type { Ctx } from "@/lib/types";
 import { parseOrdersCsv } from "./csv";
 
-export async function createChatOrder(ctx: Ctx, o: { conversationId: string; contactId: string; creativeId: string | null; productId: string; customerName: string; quantity: number; paymentMethod: "cod" | "transfer" }) {
+export async function createChatOrder(ctx: Ctx, o: { conversationId: string; contactId: string; creativeId: string | null; productId: string; customerName: string; quantity: number; paymentMethod: "cod" | "transfer"; variantName?: string | null }) {
   const { db, workspaceId } = ctx;
   const [p] = await db.select().from(products).where(and(eq(products.id, o.productId), eq(products.workspaceId, workspaceId)));
   if (!p) throw new Error("Produk tidak ditemukan");
-  if (p.stock < o.quantity) return { ok: false as const, reason: `Stok ${p.name} tersisa ${p.stock}` };
+  const vs = await db.select().from(variants).where(eq(variants.productId, p.id));
+  let variant: (typeof vs)[0] | undefined;
+  if (vs.length) {
+    variant = vs.find((v) => v.name.toLowerCase() === (o.variantName ?? "").trim().toLowerCase());
+    if (!variant) return { ok: false as const, reason: `Pilih varian dulu: ${vs.filter((v) => v.stock > 0).map((v) => v.name).join(", ") || "semua habis"}` };
+    if (variant.stock < o.quantity) return { ok: false as const, reason: `Varian ${variant.name} tersisa ${variant.stock}` };
+  } else if (p.stock < o.quantity) return { ok: false as const, reason: `Stok ${p.name} tersisa ${p.stock}` };
   const [order] = await db.insert(orders).values({
-    workspaceId, channel: "whatsapp", productId: p.id, contactId: o.contactId, conversationId: o.conversationId, creativeId: o.creativeId,
+    workspaceId, channel: "whatsapp", productId: p.id, variantId: variant?.id, contactId: o.contactId, conversationId: o.conversationId, creativeId: o.creativeId,
     customerName: o.customerName, quantity: o.quantity, amountIdr: p.priceIdr * o.quantity, costIdr: p.costIdr * o.quantity,
     paymentMethod: o.paymentMethod, attribution: o.creativeId ? "confirmed" : "none",
   }).returning();
-  await db.update(products).set({ stock: sql`${products.stock} - ${o.quantity}` }).where(eq(products.id, p.id));
+  if (variant) await db.update(variants).set({ stock: sql`${variants.stock} - ${o.quantity}` }).where(eq(variants.id, variant.id));
+  await db.update(products).set({ stock: sql`greatest(${products.stock} - ${o.quantity}, 0)` }).where(eq(products.id, p.id));
   await logActivity(ctx, "WhatsApp closer", `Membuat pesanan ${p.name}`, `${o.customerName || "Pelanggan"}, ${o.paymentMethod === "cod" ? "COD" : "transfer"}`, "/orders");
   return { ok: true as const, order };
 }

@@ -1,5 +1,5 @@
 export type LaunchInput = {
-  campaignName: string; goal: string; destination: string; dailyBudgetIdr: number; existingCampaignId: string | null; existingAdSetId: string | null;
+  campaignName: string; goal: string; destination: string; dailyBudgetIdr: number; existingCampaignId: string | null; existingAdSetId: string | null; adultOnly: boolean;
   headline: string; primaryText: string; cta: string; whatsappOpener: string | null; refCode: string; assetFile: string; format: "image" | "video"; landingUrl: string | null;
 };
 export type LaunchResult = { campaignExternalId: string; adSetExternalId: string; adExternalId: string; activated: boolean };
@@ -64,7 +64,7 @@ export function metaPlatform(env = process.env, fetcher: typeof fetch = fetch): 
       // One ad set per campaign, so the campaign's daily budget is never multiplied by its ad count.
       const adSetId = realId(i.existingAdSetId) ?? (await call(`${account}/adsets`, {
         name: i.campaignName, campaign_id: campaignId, status, daily_budget: i.dailyBudgetIdr, billing_event: "IMPRESSIONS",
-        optimization_goal: map.optimization, bid_strategy: "LOWEST_COST_WITHOUT_CAP", targeting: { geo_locations: { countries: ["ID"] } },
+        optimization_goal: map.optimization, bid_strategy: "LOWEST_COST_WITHOUT_CAP", targeting: { geo_locations: { countries: ["ID"] }, ...(i.adultOnly ? { age_min: 18 } : {}) },
         ...(whatsapp ? { destination_type: "WHATSAPP", promoted_object: { page_id: env.META_PAGE_ID, whatsapp_phone_number: env.META_WHATSAPP_NUMBER } } : {}),
       })).id!;
       const fs = await import("node:fs");

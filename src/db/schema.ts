@@ -17,6 +17,8 @@ export type WorkspaceSettings = {
   whatsappCost: { marketingIdr: number; utilityIdr: number; serviceIdr: number; freeServicePerMonth: number };
   quietHours: { startHour: number; endHour: number };
   aiLabelAds: boolean;
+  brand?: { logoPath: string | null; primary: string; accent: string };
+  voice?: { key: "akrab" | "sopan" | "semangat"; adExample: string; chatExample: string };
 };
 
 export const members = pgTable("members", {
@@ -38,9 +40,35 @@ export const products = pgTable("products", {
   halalStatus: text("halal_status"),
   approvedClaims: jsonb("approved_claims").$type<string[]>().notNull().default([]),
   proof: jsonb("proof").$type<string[]>().notNull().default([]),
+  alwaysSay: jsonb("always_say").$type<string[]>().notNull().default([]),
+  neverSay: jsonb("never_say").$type<string[]>().notNull().default([]),
+  targetCostIdr: bigint("target_cost_idr", { mode: "number" }),
+  stopSpendIdr: bigint("stop_spend_idr", { mode: "number" }),
+  photoPath: text("photo_path"),
+  readiness: jsonb("readiness").$type<{ at: string; results: { id: string; question: string; answer: string | null; grounded: boolean }[] }>(),
   visual: jsonb("visual").$type<{ shape: "bottle" | "blender" | "shoe" | "box"; color: string }>().notNull().default({ shape: "box", color: "#2B3AA8" }),
   createdAt: createdAt(),
 }, (t) => [index("products_ws").on(t.workspaceId)]).enableRLS();
+
+export const variants = pgTable("variants", {
+  id: id(), workspaceId: ws(),
+  productId: text("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  stock: integer("stock").notNull().default(0),
+}, (t) => [uniqueIndex("variant_name").on(t.productId, t.name)]).enableRLS();
+
+export type KnowledgeTopic = "how_to" | "not_for" | "safety" | "material" | "spec" | "care" | "results" | "authenticity" | "value" | "compare" | "promo" | "faq" | "shipping" | "cod" | "returns" | "payment" | "warranty";
+/** productId null means a store policy that applies to every product. Only confirmed rows reach the closer. */
+export const knowledge = pgTable("knowledge", {
+  id: id(), workspaceId: ws(),
+  productId: text("product_id").references(() => products.id, { onDelete: "cascade" }),
+  topic: text("topic").$type<KnowledgeTopic>().notNull(),
+  question: text("question").notNull().default(""),
+  answer: text("answer").notNull().default(""),
+  status: text("status").$type<"draft" | "confirmed">().notNull().default("draft"),
+  source: text("source").$type<"manual" | "link" | "chat" | "sample">().notNull().default("manual"),
+  createdAt: createdAt(),
+}, (t) => [index("knowledge_product").on(t.workspaceId, t.productId)]).enableRLS();
 
 export type GoalKey = "eyeball" | "cold_sell" | "form" | "whatsapp_chat" | "retargeting";
 export type Destination = "whatsapp" | "website" | "shopify" | "tokopedia" | "shopee" | "tiktok_shop" | "form" | "none";
@@ -96,6 +124,8 @@ export const campaigns = pgTable("campaigns", {
   createdAt: createdAt(),
 }).enableRLS();
 
+export type CreativeCheck = { key: string; label: string; status: "pass" | "warn" | "fail" | "not_run"; detail?: string };
+
 export const creatives = pgTable("creatives", {
   id: id(), workspaceId: ws(),
   campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
@@ -112,6 +142,11 @@ export const creatives = pgTable("creatives", {
   posterPath: text("poster_path"),
   refCode: text("ref_code").notNull(),
   compliance: jsonb("compliance").$type<{ passed: boolean; issues: string[] }>().notNull().default({ passed: true, issues: [] }),
+  checks: jsonb("checks").$type<CreativeCheck[]>().notNull().default([]),
+  script: text("script"),
+  stampedPriceIdr: bigint("stamped_price_idr", { mode: "number" }),
+  attempts: integer("attempts").notNull().default(1),
+  tags: jsonb("tags").$type<Record<string, string | number | boolean>>().notNull().default({}),
   status: text("status").$type<"in_review" | "approved" | "rejected" | "live" | "paused">().notNull().default("in_review"),
   rejectReason: text("reject_reason"),
   pauseReason: text("pause_reason"),
@@ -151,7 +186,7 @@ export const usageEvents = pgTable("usage_events", {
   createdAt: createdAt(),
 }).enableRLS();
 
-export type Rule = { id: string; text: string };
+export type Rule = { id: string; text: string; enabled?: boolean; source?: "default" | "decision" | "manual"; block?: string };
 export const rulebooks = pgTable("rulebooks", {
   id: id(), workspaceId: ws(),
   kind: text("kind").$type<"ads" | "whatsapp">().notNull(),
@@ -192,6 +227,7 @@ export const conversations = pgTable("conversations", {
   source: text("source").$type<"ad_chat" | "form" | "organic">().notNull().default("organic"),
   handler: text("handler").$type<"ai" | "needs_human" | "human">().notNull().default("ai"),
   handoffReason: text("handoff_reason"),
+  handoffQuestion: text("handoff_question"),
   stage: text("stage").$type<"new" | "qualifying" | "offer" | "ordered" | "lost">().notNull().default("new"),
   simulated: boolean("simulated").notNull().default(true),
   lastMessageAt: at("last_message_at").notNull().defaultNow(),
@@ -224,6 +260,7 @@ export const orders = pgTable("orders", {
   channel: text("channel").$type<OrderChannel>().notNull(),
   externalId: text("external_id"),
   productId: text("product_id").references(() => products.id, { onDelete: "set null" }),
+  variantId: text("variant_id").references(() => variants.id, { onDelete: "set null" }),
   contactId: text("contact_id").references(() => contacts.id, { onDelete: "set null" }),
   creativeId: text("creative_id").references(() => creatives.id, { onDelete: "set null" }),
   conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),

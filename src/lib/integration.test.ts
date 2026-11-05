@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { createLocalDb } from "@/db/client";
-import { adMetrics, budgetLimits, campaigns, contacts, conversations, creatives, orders, products, workspaces } from "@/db/schema";
+import { adMetrics, budgetLimits, campaigns, contacts, conversations, creatives, knowledge, messages, objections, orders, products, variants, workspaces } from "@/db/schema";
 import { setupWorkspace } from "./seed";
 import { approveCreative, generatePlan, rejectCreative, syncFromMeta } from "./pipeline";
-import { receiveInbound, sendToCustomer } from "./whatsapp/service";
-import { CLOSER_TOOL_NAMES, runCloser } from "./ai/closer";
+import { answerAsHuman, receiveInbound, sendToCustomer } from "./whatsapp/service";
+import { closerActions, CLOSER_TOOL_NAMES, runCloser } from "./ai/closer";
+import { factsFor, runAiReadiness } from "./knowledge/service";
 import { importCsv, setOrderStatus } from "./orders/service";
 import { profitOf } from "./orders/csv";
 import { parseEvolutionEvent } from "./whatsapp/channel";
@@ -118,6 +119,66 @@ describe("sale traced to its angle", () => {
     await db.update(workspaces).set({ settings: { whatsappCost: { marketingIdr: 667, utilityIdr: 300, serviceIdr: 357, freeServicePerMonth: 0 }, quietHours: { startHour: 21, endHour: 8 }, aiLabelAds: false } }).where(eq(workspaces.id, a.workspaceId));
     const r = await receiveInbound(a, { phone: "62833", name: "", text: "halo", simulated: true });
     expect((await sendToCustomer(a, r!.conversationId, "halo", "human")).sent).toBe(false);
+  });
+
+  it("only tells customers confirmed facts, and turns a team answer into a draft", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Sepatu Empuk", priceIdr: 100000, costIdr: 1, stock: 5 }).returning();
+    await db.insert(knowledge).values([
+      { workspaceId: a.workspaceId, productId: p.id, topic: "care", question: "Cara merawat", answer: "RAHASIA-DRAFT", status: "draft" },
+      { workspaceId: a.workspaceId, productId: p.id, topic: "warranty", question: "Ada garansi?", answer: "Garansi tukar 7 hari.", status: "confirmed" },
+    ]);
+    const say = async (text: string) => { const r = await receiveInbound(a, { phone: "62844", name: "Rina", text, simulated: true }); await runCloser(a, r!.conversationId); return r!.conversationId; };
+    const conv = await say("Sepatu empuk masih ada?");
+    expect((await db.select().from(conversations).where(eq(conversations.id, conv)))[0].productId).toBe(p.id);
+    await say("Ada garansi kak?");
+    await say("Cara merawat sepatunya gimana?");
+    const texts = (await db.select().from(messages).where(eq(messages.conversationId, conv))).map((m) => m.body).join(" ");
+    expect(texts).toContain("Garansi tukar 7 hari.");
+    expect(texts).not.toContain("RAHASIA-DRAFT");
+    const [c] = await db.select().from(conversations).where(eq(conversations.id, conv));
+    expect(c.handler).toBe("needs_human");
+    expect(c.handoffQuestion).toContain("merawat");
+
+    await answerAsHuman(a, conv, "Lap dengan kain lembap ya Kak.");
+    const drafts = await db.select().from(knowledge).where(and(eq(knowledge.productId, p.id), eq(knowledge.source, "chat")));
+    expect(drafts[0]).toMatchObject({ status: "draft", answer: "Lap dengan kain lembap ya Kak." });
+    expect((await factsFor(a, p.id)).some((f) => f.source === "chat")).toBe(false);
+  });
+
+  it("sells only available variants", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Sepatu", priceIdr: 100000, costIdr: 1, stock: 2 }).returning();
+    await db.insert(variants).values([{ workspaceId: a.workspaceId, productId: p.id, name: "42", stock: 0 }, { workspaceId: a.workspaceId, productId: p.id, name: "41", stock: 2 }]);
+    const r = await receiveInbound(a, { phone: "62855", name: "", text: "halo", simulated: true });
+    const act = closerActions(a, r!.conversationId);
+    await act.selectProduct(p.id);
+    expect(await act.createOrder(1, "cod", "R", "42")).toContain("tersisa 0");
+    expect(await act.createOrder(1, "cod", "R", null)).toContain("Pilih varian");
+    expect(await act.createOrder(1, "cod", "R", "41")).toContain("Pesanan dibuat");
+    expect((await db.select().from(variants).where(eq(variants.name, "41")))[0].stock).toBe(1);
+  });
+
+  it("can't pick another business's product", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P"); const b = await setupWorkspace(db, "B", "Q");
+    const [other] = await db.insert(products).values({ workspaceId: b.workspaceId, name: "Rahasia", priceIdr: 1, costIdr: 1, stock: 1 }).returning();
+    const r = await receiveInbound(a, { phone: "62866", name: "", text: "halo", simulated: true });
+    const act = closerActions(a, r!.conversationId);
+    expect(await act.searchProducts("Rahasia")).toEqual([]);
+    expect(await act.selectProduct(other.id)).toContain("tidak ditemukan");
+  });
+
+  it("runs the AI readiness test with no customer-facing writes", async () => {
+    const db = await createLocalDb();
+    const a = await setupWorkspace(db, "A", "P");
+    const [p] = await db.insert(products).values({ workspaceId: a.workspaceId, name: "Serum", priceIdr: 1000, costIdr: 1, stock: 3 }).returning();
+    const results = await runAiReadiness(a, p.id, async () => ({ answer: "Ya", grounded: true }));
+    expect(results.length).toBeGreaterThan(15);
+    for (const t of [orders, messages, conversations, objections]) expect(await db.select().from(t)).toHaveLength(0);
+    expect((await db.select().from(products).where(eq(products.id, p.id)))[0].stock).toBe(3);
   });
 
   it("gives the closer no ad, budget, or rule tools", () => {

@@ -89,7 +89,7 @@ export async function approveCreative(ctx: Ctx, creativeId: string) {
     if (camp.destination !== "whatsapp" && !p.sourceUrl) throw new Error(`Isi link produk ${p.name} dulu, iklan ini butuh link tujuan.`);
   }
   const r = await platform.launch({
-    campaignName: camp.name, goal: camp.goal, destination: camp.destination, dailyBudgetIdr: camp.dailyBudgetIdr, existingCampaignId: camp.externalId, existingAdSetId: camp.externalAdSetId,
+    campaignName: camp.name, goal: camp.goal, destination: camp.destination, dailyBudgetIdr: camp.dailyBudgetIdr, existingCampaignId: camp.externalId, existingAdSetId: camp.externalAdSetId, adultOnly: p.category !== "general",
     headline: c.headline, primaryText: c.primaryText, cta: c.cta, whatsappOpener: c.whatsappOpener, refCode: c.refCode,
     assetFile: path.join(ASSET_DIR, c.posterPath ?? ""), format: c.format, landingUrl: p.sourceUrl ? withRef(p.sourceUrl, c.refCode) : null,
   });

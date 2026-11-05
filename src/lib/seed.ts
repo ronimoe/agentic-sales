@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { budgetLimits, campaigns, creatives, goalTemplates, members, products, rulebooks, workspaces, type GoalKey, type GoalRules, type WorkspaceSettings } from "@/db/schema";
+import { budgetLimits, campaigns, creatives, goalTemplates, knowledge, members, products, rulebooks, variants, workspaces, type GoalKey, type GoalRules, type KnowledgeTopic, type WorkspaceSettings } from "@/db/schema";
 import { getDb } from "@/db/client";
 import { adapterStatus } from "./adapters";
 import { approveCreative, generatePlan, simulateDay } from "./pipeline";
@@ -52,6 +52,20 @@ export function ensureSeeded() {
       { workspaceId: ctx.workspaceId, name: "Blender Portabel Mini", category: "general" as const, description: "Blender isi daya USB yang muat di tas.", priceIdr: 189000, costIdr: 96000, stock: 85, approvedClaims: [], proof: ["Terjual lebih dari 3.000 unit"], visual: { shape: "blender" as const, color: "#1FA971" } },
       { workspaceId: ctx.workspaceId, name: "Sepatu Kerja Empuk", category: "general" as const, description: "Sepatu kerja dengan sol empuk untuk seharian.", priceIdr: 279000, costIdr: 140000, stock: 60, approvedClaims: [], proof: ["Garansi tukar ukuran 7 hari"], visual: { shape: "shoe" as const, color: "#2B3AA8" } },
     ]).returning();
+
+    const fact = (productId: string | null, topic: KnowledgeTopic, question: string, answer: string, status: "confirmed" | "draft" = "confirmed") => ({ workspaceId: ctx.workspaceId, productId, topic, question, answer, status, source: "sample" as const });
+    await db.insert(knowledge).values([
+      fact(null, "cod", "Bisa COD?", "Bisa COD Kak, bayar saat barang sampai. Berlaku untuk Pulau Jawa dan kota besar lainnya."),
+      fact(null, "payment", "Bayarnya bisa lewat apa?", "Bisa COD atau transfer bank."),
+      fact(null, "returns", "Bisa retur?", "Barang rusak bisa ditukar dalam 7 hari setelah diterima, dengan video saat membuka paket."),
+      fact(serum.id, "how_to", "Cara pakainya bagaimana?", "Oleskan 2 sampai 3 tetes ke wajah bersih setiap malam, lalu pakai pelembap."),
+      fact(serum.id, "authenticity", "Barangnya asli?", "Asli Kak, terdaftar di BPOM dengan nomor NA18230100000."),
+      fact(serum.id, "material", "Kandungannya apa?", "Mengandung niacinamide dan hyaluronic acid.", "draft"),
+      fact(blender.id, "spec", "Kapasitasnya berapa?", "Kapasitas 350 ml, cukup untuk satu gelas besar."),
+      fact(blender.id, "care", "Cara mencucinya bagaimana?", "Isi air dan sabun, nyalakan 20 detik, lalu bilas. Bagian bawah jangan direndam."),
+      fact(shoe.id, "material", "Bahannya apa?", "Bagian atas kulit sintetis, sol karet empuk."),
+    ]);
+    await db.insert(variants).values(["40", "41", "42", "43"].map((name, i) => ({ workspaceId: ctx.workspaceId, productId: shoe.id, name, stock: [20, 25, 15, 0][i] })));
 
     await generatePlan(ctx, serum.id);
     await generatePlan(ctx, blender.id);

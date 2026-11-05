@@ -15,6 +15,13 @@
       "when": 1793904410627,
       "tag": "20261105184650_campaign_ad_set",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793905479425,
+      "tag": "20261105190439_knowledge_and_checks",
+      "breakpoints": true
     }
   ]
 }
