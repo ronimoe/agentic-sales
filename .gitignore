@@ -8,3 +8,4 @@ public/generated
 .DS_Store
 next-env.d.ts
 *.tsbuildinfo
+supabase/.temp/
